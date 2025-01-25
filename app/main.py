@@ -117,6 +117,7 @@ async def websocket_endpoint(websocket: WebSocket):
             auth_data = await websocket.receive_json()
             if not auth_data.get("type") == "auth" or auth_data.get("token") != API_KEY:
                 await websocket.close(code=4001)
+                logger.info(auth_data)
                 logger.warning(f"Client {client_id} failed authentication")
                 return
             logger.info(f"Client {client_id} authenticated successfully")
