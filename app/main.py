@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 import mediapipe as mp
 import cv2
@@ -7,13 +7,37 @@ import base64
 import json
 import logging
 from typing import Dict, List, Any
+import hashlib
+import hmac
+import os
+from dotenv import load_dotenv
 
-# Set up logging with more detailed configuration
+# Load environment variables
+load_dotenv()
+
+# Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Security configuration
+# Get API key from environment variable
+API_KEY = os.getenv("API_KEY", "124")  # Default only for development
+SALT = os.getenv("SALT", os.urandom(16).hex())  # Generate random salt if not provided
+
+# Pre-compute the hash of the API key
+def hash_api_key(key: str, salt: str) -> str:
+    """Hash the API key using SHA-256 and a salt"""
+    return hashlib.pbkdf2_hmac(
+        'sha256', 
+        key.encode(), 
+        salt.encode(), 
+        100000  # Number of iterations
+    ).hex()
+
+STORED_API_KEY_HASH = hash_api_key(API_KEY, SALT)
 
 # Define allowed origins
 ALLOWED_ORIGINS = [
@@ -23,7 +47,7 @@ ALLOWED_ORIGINS = [
 
 app = FastAPI()
 
-# Add CORS middleware with restricted origins
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -41,10 +65,33 @@ hands = mp_hands.Hands(
     min_detection_confidence=0.5
 )
 
+def verify_api_key(provided_key: str) -> bool:
+    """Verify a provided API key against the stored hash"""
+    if not provided_key:
+        return False
+    
+    # Hash the provided key with the same salt
+    provided_key_hash = hash_api_key(provided_key, SALT)
+    
+    # Compare in constant time to prevent timing attacks
+    return hmac.compare_digest(
+        provided_key_hash.encode(),
+        STORED_API_KEY_HASH.encode()
+    )
+
+async def authenticate_websocket(websocket: WebSocket) -> bool:
+    """Authenticate WebSocket connection using API key"""
+    api_key = websocket.query_params.get("api_key")
+    
+    if not verify_api_key(api_key):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        logger.warning("Invalid API key attempt")
+        return False
+        
+    return True
+
 def process_frame(base64_frame: str) -> Dict[str, List[Dict[str, Any]]]:
-    """
-    Process a single frame and detect hands.
-    """
+    """Process a single frame and detect hands."""
     try:
         # Decode base64 image
         img_data = base64.b64decode(base64_frame.split(',')[1])
@@ -66,7 +113,6 @@ def process_frame(base64_frame: str) -> Dict[str, List[Dict[str, Any]]]:
             logger.info(f"Detected {len(results.multi_hand_landmarks)} hands")
             
             for hand_landmarks in results.multi_hand_landmarks:
-                # Extract landmarks
                 landmarks = []
                 x_coords = []
                 y_coords = []
@@ -80,7 +126,6 @@ def process_frame(base64_frame: str) -> Dict[str, List[Dict[str, Any]]]:
                     x_coords.append(landmark.x)
                     y_coords.append(landmark.y)
                 
-                # Calculate bounding box
                 bbox = {
                     'x_min': min(x_coords),
                     'x_max': max(x_coords),
@@ -92,7 +137,6 @@ def process_frame(base64_frame: str) -> Dict[str, List[Dict[str, Any]]]:
                     'landmarks': landmarks,
                     'bbox': bbox
                 })
-        logger.info("Succesfully processed image")        
         return {"hands": hand_data}
         
     except Exception as e:
@@ -106,16 +150,19 @@ async def root():
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    client_id = id(websocket)  # Generate unique ID for this connection
+    client_id = id(websocket)
     logger.info(f"New client {client_id} attempting to connect")
     
     try:
+        # Authenticate before accepting connection
+        if not await authenticate_websocket(websocket):
+            return
+            
         await websocket.accept()
         logger.info(f"Client {client_id} connected successfully")
         
         while True:
             try:
-                # Receive and validate frame
                 data = await websocket.receive_text()
                 logger.debug(f"Received frame from client {client_id}")
                 
@@ -127,7 +174,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     continue
                 
-                # Process frame and send response
                 response_data = process_frame(data)
                 await websocket.send_json(response_data)
                 
