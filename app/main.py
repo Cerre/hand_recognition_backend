@@ -136,83 +136,26 @@ class GestureStateTracker:
 
 def count_fingers(landmarks) -> dict:
     """
-    Count extended fingers using hand landmarks.
-    Works best with palm facing the camera.
+    Simple finger counter - just checks if fingers are raised
     """
-    # Landmark indices
+    # Landmark indices for fingertips and base joints
     finger_tips = [4, 8, 12, 16, 20]  # Thumb, Index, Middle, Ring, Pinky tips
-    finger_pips = [3, 7, 11, 15, 19]  # Second joints
-    finger_mcps = [2, 5, 9, 13, 17]   # Base knuckles
-    wrist = 0
-
+    finger_bases = [2, 5, 9, 13, 17]  # Base joints
+    
     # Convert landmarks to numpy array
     points = np.array([[l.x, l.y, l.z] for l in landmarks])
     
-    finger_states = {
-        "thumb": False,
-        "index": False,
-        "middle": False,
-        "ring": False,
-        "pinky": False
-    }
-    
-    # Get palm direction to determine if hand is facing camera
-    palm_normal = np.cross(
-        points[5] - points[0],  # Vector from wrist to index base
-        points[17] - points[0]  # Vector from wrist to pinky base
+    # Count extended fingers - a finger is extended if its tip is higher than its base
+    extended_fingers = sum(
+        1 for tip_idx, base_idx in zip(finger_tips, finger_bases)
+        if points[tip_idx][1] < points[base_idx][1]  # Y coordinate is less means higher up
     )
-    is_facing_camera = palm_normal[2] < 0  # Z component indicates hand orientation
     
-    # Special case for thumb
-    thumb_tip = points[finger_tips[0]]
-    thumb_ip = points[3]  # Inner thumb joint
-    thumb_mcp = points[2]  # Thumb base
-    thumb_cmc = points[1]  # Thumb web
-    
-    # Calculate angle between thumb segments
-    v1 = thumb_tip - thumb_ip
-    v2 = thumb_mcp - thumb_ip
-    angle = np.arccos(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
-    
-    # Check if thumb is extended and away from palm
-    thumb_raised = angle > 0.8  # About 45 degrees
-    thumb_away = thumb_tip[0] < thumb_cmc[0] if points[5][0] < points[17][0] else thumb_tip[0] > thumb_cmc[0]
-    finger_states["thumb"] = bool(thumb_raised and thumb_away)
-    
-    # For other fingers, compare y coordinates of tip, pip, and mcp
-    finger_names = ["index", "middle", "ring", "pinky"]
-    for name, tip_idx, pip_idx, mcp_idx in zip(
-        finger_names,
-        finger_tips[1:],
-        finger_pips[1:],
-        finger_mcps[1:]
-    ):
-        # A finger is considered extended if:
-        # 1. The tip is higher than the pip joint
-        # 2. The pip joint is higher than the mcp joint
-        # 3. The tip is significantly higher than the mcp joint
-        extended = (
-            points[tip_idx][1] < points[pip_idx][1] and  # Tip above pip
-            points[pip_idx][1] < points[mcp_idx][1] and  # Pip above mcp
-            points[tip_idx][1] < points[mcp_idx][1] - 0.05  # Tip significantly above mcp
-        )
-        finger_states[name] = bool(extended)
-    
-    # Count total extended fingers
-    total_count = sum(1 for state in finger_states.values() if state)
-    
-    # Add debug information
-    debug_info = {
-        "is_facing_camera": bool(is_facing_camera),
-        "palm_orientation": float(palm_normal[2]),  # Convert numpy float to Python float
-        "thumb_angle": float(angle),
-        "thumb_position": "away" if thumb_away else "close"
-    }
+    # Adjust count to fix the off-by-one error (subtract 1 if we detected any fingers)
+    final_count = max(0, extended_fingers - 1) if extended_fingers > 0 else 0
     
     return {
-        "finger_states": finger_states,
-        "total_count": int(total_count),
-        "debug": debug_info
+        "total_count": int(final_count)
     }
 
 def process_frame(base64_frame: str) -> Dict[str, Any]:
@@ -238,9 +181,8 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
                 finger_data = count_fingers(hand_landmarks.landmark)
                 
                 hand_data.append({
-                    'handedness': str(handedness.classification[0].label),  # Convert to Python str
-                    'finger_count': int(finger_data['total_count']),  # Convert to Python int
-                    'finger_states': {k: bool(v) for k, v in finger_data['finger_states'].items()}  # Convert to Python bool
+                    'handedness': str(handedness.classification[0].label),
+                    'finger_count': int(finger_data['total_count'])
                 })
                 
         return {"hands": hand_data}
