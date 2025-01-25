@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # Define allowed origins
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
-    "https://hand-tracker-web.vercel.app",
+    "https://hand-recognition-frontend.vercel.app/",
 ]
 
 app = FastAPI()
@@ -26,7 +26,7 @@ app = FastAPI()
 # Add CORS middleware with restricted origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
