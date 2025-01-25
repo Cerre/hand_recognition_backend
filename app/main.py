@@ -39,14 +39,21 @@ hands = mp_hands.Hands(
 )
 
 class GestureStateTracker:
-    def __init__(self, buffer_size=5, stable_threshold=0.6):  # Reduced buffer size and threshold
+    def __init__(self, buffer_size=5, stable_threshold=0.6):
         self.buffer_size = buffer_size
         self.stable_threshold = stable_threshold
+        # Store tuples of (timestamp, value)
         self.left_hand_buffer = deque(maxlen=buffer_size)
         self.right_hand_buffer = deque(maxlen=buffer_size)
         self.last_update_time = 0
         self.last_stable_state = {"player": None, "points": None}
-        self.UPDATE_INTERVAL = 0.2  # Reduced to 200ms between updates
+        self.UPDATE_INTERVAL = 0.2  # 200ms between updates
+        self.MAX_GESTURE_AGE = 2.0  # Maximum age of gestures to consider (2 seconds)
+
+    def _clean_old_data(self, buffer, current_time):
+        """Remove data older than MAX_GESTURE_AGE seconds"""
+        cutoff_time = current_time - self.MAX_GESTURE_AGE
+        return deque((ts, val) for ts, val in buffer if ts > cutoff_time)
 
     def add_frame_data(self, hands_data: List[Dict]) -> Dict:
         current_time = time()
@@ -60,19 +67,23 @@ class GestureStateTracker:
             else:
                 right_hand = hand['finger_count']
         
-        # Add to buffers
-        self.left_hand_buffer.append(left_hand)
-        self.right_hand_buffer.append(right_hand)
+        # Add to buffers with timestamps
+        self.left_hand_buffer.append((current_time, left_hand))
+        self.right_hand_buffer.append((current_time, right_hand))
+        
+        # Clean old data
+        self.left_hand_buffer = self._clean_old_data(self.left_hand_buffer, current_time)
+        self.right_hand_buffer = self._clean_old_data(self.right_hand_buffer, current_time)
         
         # Only process if enough time has passed
         if current_time - self.last_update_time < self.UPDATE_INTERVAL:
             return None
         
-        # Get stable counts
+        # Get stable counts from recent data only
         player_num = self._get_stable_count(self.left_hand_buffer)
         points = self._get_stable_count(self.right_hand_buffer)
         
-        # Always send update if we have valid numbers
+        # Send update if we have valid numbers
         if player_num is not None or points is not None:
             self.last_stable_state = {
                 "player": player_num,
@@ -84,67 +95,58 @@ class GestureStateTracker:
                 "type": "score_update",
                 "player": player_num,
                 "points": points,
-                "timestamp": current_time
+                "timestamp": current_time,
+                "debug": {
+                    "left_buffer_size": len(self.left_hand_buffer),
+                    "right_buffer_size": len(self.right_hand_buffer),
+                    "data_age": current_time - min(
+                        (ts for ts, _ in self.left_hand_buffer), 
+                        default=current_time
+                    )
+                }
             }
         
         return None
 
     def _get_stable_count(self, buffer) -> int:
-        """Return most frequent number in buffer if it meets stability threshold"""
-        if not buffer:
+            """Return most frequent number in buffer"""
+            if not buffer or len(buffer) < 2:
+                return None
+                
+            # Extract only values from timestamp-value pairs
+            valid_counts = [val for _, val in buffer if val is not None]
+            if len(valid_counts) < 2:
+                return None
+                
+            # Check last two readings for quick response
+            if valid_counts[-1] == valid_counts[-2]:
+                return int(valid_counts[-1])
+                
+            # Fallback to frequency-based detection
+            count_freq = {}
+            for count in valid_counts:
+                count_freq[count] = count_freq.get(count, 0) + 1
+            
+            max_count = max(count_freq.items(), key=lambda x: x[1])
+            
+            if max_count[1] / len(valid_counts) >= self.stable_threshold:
+                return int(max_count[0])
+                
             return None
-            
-        # Filter out None values
-        valid_counts = [x for x in buffer if x is not None]
-        if not valid_counts:
-            return None
-            
-        # If we have at least 2 valid readings, use the most recent ones
-        if len(valid_counts) >= 2:
-            recent_counts = valid_counts[-2:]
-            if recent_counts[0] == recent_counts[1]:  # If last two readings match
-                return int(recent_counts[0])
-            
-        # Fallback to frequency-based detection
-        count_freq = {}
-        for count in valid_counts:
-            count_freq[count] = count_freq.get(count, 0) + 1
-        
-        max_count = max(count_freq.items(), key=lambda x: x[1])
-        
-        if max_count[1] / len(buffer) >= self.stable_threshold:
-            return int(max_count[0])
-            
-        return None
-
-    def _get_stable_count(self, buffer) -> int:
-        """Return most frequent number in buffer if it meets stability threshold"""
-        if not buffer:
-            return None
-            
-        # Filter out None values
-        valid_counts = [x for x in buffer if x is not None]
-        if not valid_counts:
-            return None
-            
-        # Count frequencies
-        count_freq = {}
-        for count in valid_counts:
-            count_freq[count] = count_freq.get(count, 0) + 1
-        
-        # Find most frequent
-        max_count = max(count_freq.items(), key=lambda x: x[1])
-        
-        # Check if meets stability threshold
-        if max_count[1] / len(buffer) >= self.stable_threshold:
-            return int(max_count[0])  # Convert to Python int
-            
-        return None
 
 def count_fingers(landmarks) -> dict:
-    """Count extended fingers using hand landmarks"""
-    finger_tips = [4, 8, 12, 16, 20]  # Thumb, Index, Middle, Ring, Pinky
-    finger_bases = [2, 5, 9, 13, 17]  # For non-thumb fingers
+    """
+    Count extended fingers using hand landmarks.
+    Works best with palm facing the camera.
+    """
+    # Landmark indices
+    finger_tips = [4, 8, 12, 16, 20]  # Thumb, Index, Middle, Ring, Pinky tips
+    finger_pips = [3, 7, 11, 15, 19]  # Second joints
+    finger_mcps = [2, 5, 9, 13, 17]   # Base knuckles
+    wrist = 0
+
+    # Convert landmarks to numpy array
+    points = np.array([[l.x, l.y, l.z] for l in landmarks])
     
     finger_states = {
         "thumb": False,
@@ -154,29 +156,63 @@ def count_fingers(landmarks) -> dict:
         "pinky": False
     }
     
-    # Convert landmarks to numpy array for easier calculations
-    points = np.array([[l.x, l.y, l.z] for l in landmarks])
+    # Get palm direction to determine if hand is facing camera
+    palm_normal = np.cross(
+        points[5] - points[0],  # Vector from wrist to index base
+        points[17] - points[0]  # Vector from wrist to pinky base
+    )
+    is_facing_camera = palm_normal[2] < 0  # Z component indicates hand orientation
     
     # Special case for thumb
     thumb_tip = points[finger_tips[0]]
-    thumb_ip = points[3]
-    thumb_base = points[finger_bases[0]]
+    thumb_ip = points[3]  # Inner thumb joint
+    thumb_mcp = points[2]  # Thumb base
+    thumb_cmc = points[1]  # Thumb web
     
+    # Calculate angle between thumb segments
     v1 = thumb_tip - thumb_ip
-    v2 = thumb_base - thumb_ip
+    v2 = thumb_mcp - thumb_ip
     angle = np.arccos(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
-    finger_states["thumb"] = bool(angle > 1.0)  # Convert to Python bool
     
-    # For other fingers
+    # Check if thumb is extended and away from palm
+    thumb_raised = angle > 0.8  # About 45 degrees
+    thumb_away = thumb_tip[0] < thumb_cmc[0] if points[5][0] < points[17][0] else thumb_tip[0] > thumb_cmc[0]
+    finger_states["thumb"] = bool(thumb_raised and thumb_away)
+    
+    # For other fingers, compare y coordinates of tip, pip, and mcp
     finger_names = ["index", "middle", "ring", "pinky"]
-    for name, tip_idx, base_idx in zip(finger_names, finger_tips[1:], finger_bases[1:]):
-        finger_states[name] = bool(points[tip_idx][1] < points[base_idx][1])  # Convert to Python bool
+    for name, tip_idx, pip_idx, mcp_idx in zip(
+        finger_names,
+        finger_tips[1:],
+        finger_pips[1:],
+        finger_mcps[1:]
+    ):
+        # A finger is considered extended if:
+        # 1. The tip is higher than the pip joint
+        # 2. The pip joint is higher than the mcp joint
+        # 3. The tip is significantly higher than the mcp joint
+        extended = (
+            points[tip_idx][1] < points[pip_idx][1] and  # Tip above pip
+            points[pip_idx][1] < points[mcp_idx][1] and  # Pip above mcp
+            points[tip_idx][1] < points[mcp_idx][1] - 0.05  # Tip significantly above mcp
+        )
+        finger_states[name] = bool(extended)
     
+    # Count total extended fingers
     total_count = sum(1 for state in finger_states.values() if state)
+    
+    # Add debug information
+    debug_info = {
+        "is_facing_camera": bool(is_facing_camera),
+        "palm_orientation": float(palm_normal[2]),  # Convert numpy float to Python float
+        "thumb_angle": float(angle),
+        "thumb_position": "away" if thumb_away else "close"
+    }
     
     return {
         "finger_states": finger_states,
-        "total_count": int(total_count)  # Convert to Python int
+        "total_count": int(total_count),
+        "debug": debug_info
     }
 
 def process_frame(base64_frame: str) -> Dict[str, Any]:
