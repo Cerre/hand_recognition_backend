@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Security configuration
 # Get API key from environment variable
-API_KEY = os.getenv("API_KEY", "124")  # Default only for development
+API_KEY = os.getenv("API_KEY")  # Default only for development
 SALT = os.getenv("SALT", os.urandom(16).hex())  # Generate random salt if not provided
 
 # Pre-compute the hash of the API key
