@@ -92,7 +92,7 @@ def process_frame(base64_frame: str) -> Dict[str, List[Dict[str, Any]]]:
                     'landmarks': landmarks,
                     'bbox': bbox
                 })
-                
+        logger.info("Succesfully processed image")        
         return {"hands": hand_data}
         
     except Exception as e:
