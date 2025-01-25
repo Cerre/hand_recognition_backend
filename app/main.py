@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 import mediapipe as mp
 import cv2
@@ -7,29 +7,32 @@ import base64
 import json
 import logging
 
+# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # For testing. In production, use your Vercel URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.get("/")
-async def root():
-    return {"message": "Hand recognition backend is running"}
-
+# Initialize MediaPipe
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(
     static_image_mode=False,
     max_num_hands=2,
     min_detection_confidence=0.5
 )
+
+@app.get("/")
+async def root():
+    return {"message": "Hand recognition backend is running"}
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -39,20 +42,22 @@ async def websocket_endpoint(websocket: WebSocket):
     
     try:
         while True:
+            data = await websocket.receive_text()
+            logger.info("Received frame")
+            
             try:
-                data = await websocket.receive_text()
-                logger.info(f"Received frame data")
-                
-                # Extract and decode base64 image
+                # Process the frame
+                if ',' not in data:
+                    logger.error("Invalid data format")
+                    continue
+                    
                 img_data = base64.b64decode(data.split(',')[1])
                 nparr = np.frombuffer(img_data, np.uint8)
                 frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                 
                 if frame is None:
+                    logger.error("Could not decode image")
                     continue
-                    
-                # Get image dimensions
-                height, width = frame.shape[:2]
                 
                 # Process hands
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -60,38 +65,28 @@ async def websocket_endpoint(websocket: WebSocket):
                 
                 hand_data = []
                 if results.multi_hand_landmarks:
-                    for idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
-                        # Get bounding box
-                        x_coords = [landmark.x for landmark in hand_landmarks.landmark]
-                        y_coords = [landmark.y for landmark in hand_landmarks.landmark]
-                        bbox = {
-                            'x_min': min(x_coords),
-                            'x_max': max(x_coords),
-                            'y_min': min(y_coords),
-                            'y_max': max(y_coords),
-                        }
-                        
-                        # Add landmarks and bounding box
-                        hand_info = {
-                            'landmarks': [
-                                {
-                                    'x': float(landmark.x),
-                                    'y': float(landmark.y),
-                                    'z': float(landmark.z)
-                                } for landmark in hand_landmarks.landmark
-                            ],
-                            'bbox': bbox
-                        }
-                        hand_data.append(hand_info)
+                    logger.info(f"Detected {len(results.multi_hand_landmarks)} hands")
+                    for hand_landmarks in results.multi_hand_landmarks:
+                        landmarks = []
+                        for landmark in hand_landmarks.landmark:
+                            landmarks.append({
+                                'x': float(landmark.x),
+                                'y': float(landmark.y),
+                                'z': float(landmark.z)
+                            })
+                        hand_data.append(landmarks)
                 
                 await websocket.send_json({
-                    "hands": hand_data,
-                    "image_dims": {"width": width, "height": height}
+                    "hands": hand_data
                 })
                 
             except Exception as e:
                 logger.error(f"Error processing frame: {str(e)}")
-                await websocket.send_json({"hands": [], "image_dims": None})
+                await websocket.send_json({
+                    "hands": []
+                })
                 
     except Exception as e:
         logger.error(f"WebSocket error: {str(e)}")
+    finally:
+        logger.info("Connection closed")
