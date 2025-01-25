@@ -8,10 +8,6 @@ import json
 import logging
 from typing import Dict, List, Any
 import os
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
 
 # Set up logging
 logging.basicConfig(
@@ -21,7 +17,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # API Key configuration
-API_KEY = os.getenv("API_KEY", "default-key-for-development")
+API_KEY = os.environ.get("API_KEY", "Hejhej")
 
 # Define allowed origins
 ALLOWED_ORIGINS = [
@@ -48,11 +44,6 @@ hands = mp_hands.Hands(
     max_num_hands=2,
     min_detection_confidence=0.5
 )
-
-async def verify_api_key(websocket: WebSocket) -> bool:
-    """Simple API key verification"""
-    api_key = websocket.query_params.get("api_key")
-    return api_key == API_KEY
 
 def process_frame(base64_frame: str) -> Dict[str, List[Dict[str, Any]]]:
     """Process a single frame and detect hands."""
@@ -118,14 +109,25 @@ async def websocket_endpoint(websocket: WebSocket):
     logger.info(f"New client {client_id} attempting to connect")
     
     try:
-        # Verify API key before accepting connection
-        if not await verify_api_key(websocket):
-            await websocket.close(code=4001)
-            logger.warning(f"Client {client_id} failed API key verification")
-            return
-            
         await websocket.accept()
-        logger.info(f"Client {client_id} connected successfully")
+        logger.info(f"Client {client_id} connected, awaiting authentication")
+        
+        # Wait for authentication
+        try:
+            auth_data = await websocket.receive_json()
+            if not auth_data.get("type") == "auth" or auth_data.get("token") != API_KEY:
+                await websocket.close(code=4001)
+                logger.warning(f"Client {client_id} failed authentication")
+                return
+            logger.info(f"Client {client_id} authenticated successfully")
+            
+            # Send authentication success message
+            await websocket.send_json({"type": "auth", "status": "success"})
+            
+        except json.JSONDecodeError:
+            await websocket.close(code=4001)
+            logger.warning(f"Client {client_id} sent invalid authentication data")
+            return
         
         while True:
             try:
