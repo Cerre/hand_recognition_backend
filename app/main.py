@@ -39,14 +39,14 @@ hands = mp_hands.Hands(
 )
 
 class GestureStateTracker:
-    def __init__(self, buffer_size=10, stable_threshold=0.7):
+    def __init__(self, buffer_size=5, stable_threshold=0.6):  # Reduced buffer size and threshold
         self.buffer_size = buffer_size
         self.stable_threshold = stable_threshold
         self.left_hand_buffer = deque(maxlen=buffer_size)
         self.right_hand_buffer = deque(maxlen=buffer_size)
         self.last_update_time = 0
         self.last_stable_state = {"player": None, "points": None}
-        self.UPDATE_INTERVAL = 0.5  # seconds between updates
+        self.UPDATE_INTERVAL = 0.2  # Reduced to 200ms between updates
 
     def add_frame_data(self, hands_data: List[Dict]) -> Dict:
         current_time = time()
@@ -72,10 +72,8 @@ class GestureStateTracker:
         player_num = self._get_stable_count(self.left_hand_buffer)
         points = self._get_stable_count(self.right_hand_buffer)
         
-        # Check if state has changed
-        if (player_num != self.last_stable_state["player"] or 
-            points != self.last_stable_state["points"]):
-            
+        # Always send update if we have valid numbers
+        if player_num is not None or points is not None:
             self.last_stable_state = {
                 "player": player_num,
                 "points": points
@@ -89,6 +87,34 @@ class GestureStateTracker:
                 "timestamp": current_time
             }
         
+        return None
+
+    def _get_stable_count(self, buffer) -> int:
+        """Return most frequent number in buffer if it meets stability threshold"""
+        if not buffer:
+            return None
+            
+        # Filter out None values
+        valid_counts = [x for x in buffer if x is not None]
+        if not valid_counts:
+            return None
+            
+        # If we have at least 2 valid readings, use the most recent ones
+        if len(valid_counts) >= 2:
+            recent_counts = valid_counts[-2:]
+            if recent_counts[0] == recent_counts[1]:  # If last two readings match
+                return int(recent_counts[0])
+            
+        # Fallback to frequency-based detection
+        count_freq = {}
+        for count in valid_counts:
+            count_freq[count] = count_freq.get(count, 0) + 1
+        
+        max_count = max(count_freq.items(), key=lambda x: x[1])
+        
+        if max_count[1] / len(buffer) >= self.stable_threshold:
+            return int(max_count[0])
+            
         return None
 
     def _get_stable_count(self, buffer) -> int:
