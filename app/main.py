@@ -16,8 +16,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# API Key configuration
-API_KEY = os.environ.get("API_KEY", "default-key-for-development")
+API_KEY = os.environ.get("API_KEY")
+if API_KEY is None:
+    logger.warning("No API_KEY found in environment variables, using default key")
+    API_KEY = "default-key-for-development"
+else:
+    logger.info("API_KEY loaded from environment variables")
 
 # Define allowed origins
 ALLOWED_ORIGINS = [
@@ -105,7 +109,8 @@ def process_frame(base64_frame: str) -> Dict[str, List[Dict[str, Any]]]:
 
 @app.get("/")
 async def root():
-    logger.info("Health check endpoint accessed")
+    env_vars = {key: value for key, value in os.environ.items()}
+    logger.info(f"Environment variables: {env_vars}")
     return {"message": "Hand recognition backend is running"}
 
 @app.websocket("/ws")
