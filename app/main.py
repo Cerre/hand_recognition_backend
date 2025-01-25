@@ -20,6 +20,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")
+async def root():
+    return {"message": "Hand recognition backend is running"}
+
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(
     static_image_mode=False,
