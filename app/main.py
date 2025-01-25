@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 import mediapipe as mp
 import cv2
@@ -17,7 +17,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # API Key configuration
-API_KEY = os.environ.get("API_KEY", "Hejhej")
+API_KEY = os.environ.get("API_KEY", "default-key-for-development")
 
 # Define allowed origins
 ALLOWED_ORIGINS = [
@@ -30,9 +30,9 @@ app = FastAPI()
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
     max_age=3600,
 )
@@ -44,6 +44,11 @@ hands = mp_hands.Hands(
     max_num_hands=2,
     min_detection_confidence=0.5
 )
+
+@app.get("/socket.io/{path_params:path}")
+async def handle_socketio(request: Request):
+    """Handle Socket.IO polling requests to prevent 404 logs"""
+    return {"message": "Socket.IO not supported. Please use WebSocket connection."}, 400
 
 def process_frame(base64_frame: str) -> Dict[str, List[Dict[str, Any]]]:
     """Process a single frame and detect hands."""
@@ -96,7 +101,7 @@ def process_frame(base64_frame: str) -> Dict[str, List[Dict[str, Any]]]:
         
     except Exception as e:
         logger.error(f"Error in process_frame: {str(e)}", exc_info=True)
-        return {"hands": []}
+        return {"error": str(e), "hands": []}
 
 @app.get("/")
 async def root():
@@ -106,65 +111,100 @@ async def root():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     client_id = id(websocket)
+    authenticated = False
     logger.info(f"New client {client_id} attempting to connect")
     
     try:
         await websocket.accept()
         logger.info(f"Client {client_id} connected, awaiting authentication")
         
-        # Wait for authentication
-        try:
-            auth_data = await websocket.receive_json()
-            if not auth_data.get("type") == "auth" or auth_data.get("token") != API_KEY:
-                await websocket.close(code=4001)
-                logger.info(auth_data)
-                logger.warning(f"Client {client_id} failed authentication")
-                return
-            logger.info(f"Client {client_id} authenticated successfully")
-            
-            # Send authentication success message
-            await websocket.send_json({"type": "auth", "status": "success"})
-            
-        except json.JSONDecodeError:
-            await websocket.close(code=4001)
-            logger.warning(f"Client {client_id} sent invalid authentication data")
-            return
-        
         while True:
             try:
-                data = await websocket.receive_text()
-                logger.debug(f"Received frame from client {client_id}")
+                # Read the next message
+                message = await websocket.receive()
                 
-                if ',' not in data:
-                    logger.error(f"Client {client_id} sent invalid data format")
-                    await websocket.send_json({
-                        "error": "Invalid data format",
-                        "hands": []
-                    })
-                    continue
+                # Handle different message types
+                if message["type"] == "websocket.disconnect":
+                    logger.warning(f"Client {client_id} disconnected")
+                    break
                 
-                response_data = process_frame(data)
-                await websocket.send_json(response_data)
+                if not authenticated:
+                    if message["type"] != "websocket.receive":
+                        continue
+                        
+                    try:
+                        data = json.loads(message["text"])
+                        if data.get("type") != "auth":
+                            await websocket.send_json({
+                                "type": "error",
+                                "message": "Authentication required. Send a message with type 'auth' and your token."
+                            })
+                            await websocket.close(code=4001)
+                            return
+                            
+                        if data.get("token") != API_KEY:
+                            await websocket.send_json({
+                                "type": "error",
+                                "message": "Invalid authentication token"
+                            })
+                            await websocket.close(code=4001)
+                            return
+                            
+                        authenticated = True
+                        await websocket.send_json({
+                            "type": "auth",
+                            "status": "success",
+                            "message": "Successfully authenticated"
+                        })
+                        logger.info(f"Client {client_id} authenticated successfully")
+                        continue
+                        
+                    except json.JSONDecodeError:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Invalid JSON format in authentication message"
+                        })
+                        await websocket.close(code=4001)
+                        return
                 
-                if response_data["hands"]:
-                    logger.debug(f"Sent hand data to client {client_id}: {len(response_data['hands'])} hands detected")
+                else:
+                    # Handle frame data after authentication
+                    if message["type"] != "websocket.receive":
+                        continue
+                        
+                    data = message["text"]
+                    if ',' not in data:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Invalid frame format. Expected base64 image data.",
+                            "hands": []
+                        })
+                        continue
+                    
+                    response_data = process_frame(data)
+                    await websocket.send_json(response_data)
+                    
+                    if response_data["hands"]:
+                        logger.debug(f"Sent hand data to client {client_id}: {len(response_data['hands'])} hands detected")
                 
             except WebSocketDisconnect:
                 logger.warning(f"Client {client_id} disconnected")
                 break
                 
             except json.JSONDecodeError as e:
-                logger.error(f"JSON encoding error for client {client_id}: {str(e)}")
                 await websocket.send_json({
-                    "error": "Failed to encode response",
+                    "type": "error",
+                    "message": f"Invalid JSON format: {str(e)}",
                     "hands": []
                 })
-                
+            
             except Exception as e:
-                logger.error(f"Error processing frame for client {client_id}: {str(e)}", exc_info=True)
+                error_msg = f"Error processing message: {str(e)}"
+                logger.error(error_msg, exc_info=True)
                 try:
                     await websocket.send_json({
-                        "error": "Internal server error",
+                        "type": "error",
+                        "message": error_msg,
                         "hands": []
                     })
                 except:
@@ -172,7 +212,15 @@ async def websocket_endpoint(websocket: WebSocket):
                     break
                     
     except Exception as e:
-        logger.error(f"Failed to establish WebSocket connection for client {client_id}: {str(e)}", exc_info=True)
+        error_msg = f"WebSocket connection error: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": error_msg
+            })
+        except:
+            pass
         
     finally:
         logger.info(f"WebSocket connection closed for client {client_id}")
