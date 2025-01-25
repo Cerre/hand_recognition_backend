@@ -41,6 +41,7 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             try:
                 data = await websocket.receive_text()
+                logger.info(f"Received frame data")
                 
                 # Extract and decode base64 image
                 img_data = base64.b64decode(data.split(',')[1])
