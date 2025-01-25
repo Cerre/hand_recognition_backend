@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, status
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import mediapipe as mp
 import cv2
@@ -7,8 +7,6 @@ import base64
 import json
 import logging
 from typing import Dict, List, Any
-import hashlib
-import hmac
 import os
 from dotenv import load_dotenv
 
@@ -22,27 +20,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Security configuration
-# Get API key from environment variable
-API_KEY = os.getenv("API_KEY")  # Default only for development
-SALT = os.getenv("SALT", os.urandom(16).hex())  # Generate random salt if not provided
-
-# Pre-compute the hash of the API key
-def hash_api_key(key: str, salt: str) -> str:
-    """Hash the API key using SHA-256 and a salt"""
-    return hashlib.pbkdf2_hmac(
-        'sha256', 
-        key.encode(), 
-        salt.encode(), 
-        100000  # Number of iterations
-    ).hex()
-
-STORED_API_KEY_HASH = hash_api_key(API_KEY, SALT)
+# API Key configuration
+API_KEY = os.getenv("API_KEY", "default-key-for-development")
 
 # Define allowed origins
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
-    "https://hand-recognition-frontend.vercel.app/",
+    "https://hand-tracker-web.vercel.app",
 ]
 
 app = FastAPI()
@@ -65,30 +49,10 @@ hands = mp_hands.Hands(
     min_detection_confidence=0.5
 )
 
-def verify_api_key(provided_key: str) -> bool:
-    """Verify a provided API key against the stored hash"""
-    if not provided_key:
-        return False
-    
-    # Hash the provided key with the same salt
-    provided_key_hash = hash_api_key(provided_key, SALT)
-    
-    # Compare in constant time to prevent timing attacks
-    return hmac.compare_digest(
-        provided_key_hash.encode(),
-        STORED_API_KEY_HASH.encode()
-    )
-
-async def authenticate_websocket(websocket: WebSocket) -> bool:
-    """Authenticate WebSocket connection using API key"""
+async def verify_api_key(websocket: WebSocket) -> bool:
+    """Simple API key verification"""
     api_key = websocket.query_params.get("api_key")
-    
-    if not verify_api_key(api_key):
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        logger.warning("Invalid API key attempt")
-        return False
-        
-    return True
+    return api_key == API_KEY
 
 def process_frame(base64_frame: str) -> Dict[str, List[Dict[str, Any]]]:
     """Process a single frame and detect hands."""
@@ -154,8 +118,10 @@ async def websocket_endpoint(websocket: WebSocket):
     logger.info(f"New client {client_id} attempting to connect")
     
     try:
-        # Authenticate before accepting connection
-        if not await authenticate_websocket(websocket):
+        # Verify API key before accepting connection
+        if not await verify_api_key(websocket):
+            await websocket.close(code=4001)
+            logger.warning(f"Client {client_id} failed API key verification")
             return
             
         await websocket.accept()
