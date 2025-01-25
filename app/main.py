@@ -39,100 +39,28 @@ hands = mp_hands.Hands(
 )
 
 class GestureStateTracker:
-    def __init__(self, buffer_size=5, stable_threshold=0.6):
-        self.buffer_size = buffer_size
-        self.stable_threshold = stable_threshold
-        # Store tuples of (timestamp, value)
-        self.left_hand_buffer = deque(maxlen=buffer_size)
-        self.right_hand_buffer = deque(maxlen=buffer_size)
-        self.last_update_time = 0
-        self.last_stable_state = {"player": None, "points": None}
-        self.UPDATE_INTERVAL = 0.2  # 200ms between updates
-        self.MAX_GESTURE_AGE = 2.0  # Maximum age of gestures to consider (2 seconds)
-
-    def _clean_old_data(self, buffer, current_time):
-        """Remove data older than MAX_GESTURE_AGE seconds"""
-        cutoff_time = current_time - self.MAX_GESTURE_AGE
-        return deque((ts, val) for ts, val in buffer if ts > cutoff_time)
+    def __init__(self):
+        pass  # No initialization needed anymore
 
     def add_frame_data(self, hands_data: List[Dict]) -> Dict:
-        current_time = time()
-        
+        """Simply process the current frame data and return results"""
         # Extract left and right hand data
         left_hand = None
         right_hand = None
+        
         for hand in hands_data:
             if hand['handedness'] == 'Left':
                 left_hand = hand['finger_count']
             else:
                 right_hand = hand['finger_count']
         
-        # Add to buffers with timestamps
-        self.left_hand_buffer.append((current_time, left_hand))
-        self.right_hand_buffer.append((current_time, right_hand))
-        
-        # Clean old data
-        self.left_hand_buffer = self._clean_old_data(self.left_hand_buffer, current_time)
-        self.right_hand_buffer = self._clean_old_data(self.right_hand_buffer, current_time)
-        
-        # Only process if enough time has passed
-        if current_time - self.last_update_time < self.UPDATE_INTERVAL:
-            return None
-        
-        # Get stable counts from recent data only
-        player_num = self._get_stable_count(self.left_hand_buffer)
-        points = self._get_stable_count(self.right_hand_buffer)
-        
-        # Send update if we have valid numbers
-        if player_num is not None or points is not None:
-            self.last_stable_state = {
-                "player": player_num,
-                "points": points
-            }
-            self.last_update_time = current_time
-            
-            return {
-                "type": "score_update",
-                "player": player_num,
-                "points": points,
-                "timestamp": current_time,
-                "debug": {
-                    "left_buffer_size": len(self.left_hand_buffer),
-                    "right_buffer_size": len(self.right_hand_buffer),
-                    "data_age": current_time - min(
-                        (ts for ts, _ in self.left_hand_buffer), 
-                        default=current_time
-                    )
-                }
-            }
-        
-        return None
-
-    def _get_stable_count(self, buffer) -> int:
-            """Return most frequent number in buffer"""
-            if not buffer or len(buffer) < 2:
-                return None
-                
-            # Extract only values from timestamp-value pairs
-            valid_counts = [val for _, val in buffer if val is not None]
-            if len(valid_counts) < 2:
-                return None
-                
-            # Check last two readings for quick response
-            if valid_counts[-1] == valid_counts[-2]:
-                return int(valid_counts[-1])
-                
-            # Fallback to frequency-based detection
-            count_freq = {}
-            for count in valid_counts:
-                count_freq[count] = count_freq.get(count, 0) + 1
-            
-            max_count = max(count_freq.items(), key=lambda x: x[1])
-            
-            if max_count[1] / len(valid_counts) >= self.stable_threshold:
-                return int(max_count[0])
-                
-            return None
+        # Return immediate update
+        return {
+            "type": "score_update",
+            "player": left_hand,   # Player number from left hand
+            "points": right_hand,  # Points from right hand
+            "timestamp": time()
+        }
 
 def count_fingers(landmarks) -> dict:
     """
@@ -201,7 +129,6 @@ async def websocket_endpoint(websocket: WebSocket):
     client_id = id(websocket)
     logger.info(f"New client {client_id} attempting to connect")
     
-    # Initialize state tracker for this connection
     state_tracker = GestureStateTracker()
     
     try:
@@ -219,24 +146,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     continue
                 
-                # Process frame and update state
+                # Process frame and send immediate update
                 frame_data = process_frame(data)
                 update = state_tracker.add_frame_data(frame_data["hands"])
-                
-                # Only send update if there's a stable change
-                if update:
-                    await websocket.send_json(update)
+                await websocket.send_json(update)
                 
             except WebSocketDisconnect:
                 logger.warning(f"Client {client_id} disconnected")
                 break
-                
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON encoding error for client {client_id}: {str(e)}")
-                await websocket.send_json({
-                    "error": "Failed to encode response",
-                    "hands": []
-                })
                 
             except Exception as e:
                 logger.error(f"Error processing frame for client {client_id}: {str(e)}", exc_info=True)
