@@ -64,8 +64,8 @@ class GestureStateTracker:
 
 def count_fingers(landmarks) -> dict:
     """
-    Count extended fingers including thumb using MediaPipe hand landmarks.
-    Uses joint angles to detect extended fingers.
+    Count extended fingers using MediaPipe hand landmarks.
+    Checks thumb angle relative to index finger.
     """
     # Convert landmarks to numpy array
     points = np.array([[l.x, l.y, l.z] for l in landmarks])
@@ -91,18 +91,23 @@ def count_fingers(landmarks) -> dict:
         return angle1 < 35 and angle2 < 35
 
     def is_thumb_extended(points):
-        """Check if thumb is extended using its unique joint structure"""
-        # Thumb landmark indices: 4 (tip), 3, 2, 1 (base)
-        tip_to_ip = points[4] - points[3]  # IP: Interphalangeal joint
-        ip_to_mcp = points[3] - points[2]  # MCP: Metacarpophalangeal joint
-        mcp_to_cmc = points[2] - points[1]  # CMC: Carpometacarpal joint
+        """Check if thumb is extended by comparing to index finger"""
+        # Get relevant points
+        thumb_tip = points[4]
+        thumb_base = points[2]
+        index_base = points[5]
         
-        # Calculate angles
-        angle1 = get_angle_between_vectors(tip_to_ip, ip_to_mcp)
-        angle2 = get_angle_between_vectors(ip_to_mcp, mcp_to_cmc)
+        # Vector from thumb base to tip
+        thumb_vector = thumb_tip - thumb_base
+        # Vector along index finger base
+        index_vector = index_base - thumb_base
         
-        # Thumb has different threshold due to its natural position
-        return angle1 < 45 and angle2 < 45
+        # Calculate angle between thumb and index finger
+        angle = get_angle_between_vectors(thumb_vector, index_vector)
+        
+        # Thumb is extended if it's at a significant angle from the index finger
+        # The angle should be large (thumb pointing away from fingers)
+        return angle > 45
     
     # Check thumb
     thumb_extended = is_thumb_extended(points)
