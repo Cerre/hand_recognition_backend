@@ -64,27 +64,65 @@ class GestureStateTracker:
 
 def count_fingers(landmarks) -> dict:
     """
-    Simple finger counter - just checks if fingers are raised
+    Count extended fingers including thumb using MediaPipe hand landmarks.
+    Uses joint angles to detect extended fingers.
     """
-    # Landmark indices for fingertips and base joints
-    finger_tips = [4, 8, 12, 16, 20]  # Thumb, Index, Middle, Ring, Pinky tips
-    finger_bases = [2, 5, 9, 13, 17]  # Base joints
-    
     # Convert landmarks to numpy array
     points = np.array([[l.x, l.y, l.z] for l in landmarks])
     
-    # Count extended fingers - a finger is extended if its tip is higher than its base
-    extended_fingers = sum(
-        1 for tip_idx, base_idx in zip(finger_tips, finger_bases)
-        if points[tip_idx][1] < points[base_idx][1]  # Y coordinate is less means higher up
-    )
+    def get_angle_between_vectors(v1, v2):
+        """Calculate angle between two vectors in degrees"""
+        dot_product = np.dot(v1, v2)
+        norms = np.linalg.norm(v1) * np.linalg.norm(v2)
+        return np.degrees(np.arccos(np.clip(dot_product / norms, -1.0, 1.0)))
+
+    def is_finger_extended(tip_idx, dip_idx, pip_idx, mcp_idx):
+        """Check if a finger is extended based on joint angles"""
+        # Get the three sections of the finger
+        tip_to_dip = points[tip_idx] - points[dip_idx]
+        dip_to_pip = points[dip_idx] - points[pip_idx]
+        pip_to_mcp = points[pip_idx] - points[mcp_idx]
+        
+        # Calculate angles between sections
+        angle1 = get_angle_between_vectors(tip_to_dip, dip_to_pip)
+        angle2 = get_angle_between_vectors(dip_to_pip, pip_to_mcp)
+        
+        # A finger is extended if it's relatively straight
+        return angle1 < 35 and angle2 < 35
+
+    def is_thumb_extended(points):
+        """Check if thumb is extended using its unique joint structure"""
+        # Thumb landmark indices: 4 (tip), 3, 2, 1 (base)
+        tip_to_ip = points[4] - points[3]  # IP: Interphalangeal joint
+        ip_to_mcp = points[3] - points[2]  # MCP: Metacarpophalangeal joint
+        mcp_to_cmc = points[2] - points[1]  # CMC: Carpometacarpal joint
+        
+        # Calculate angles
+        angle1 = get_angle_between_vectors(tip_to_ip, ip_to_mcp)
+        angle2 = get_angle_between_vectors(ip_to_mcp, mcp_to_cmc)
+        
+        # Thumb has different threshold due to its natural position
+        return angle1 < 45 and angle2 < 45
     
-    # Adjust count to fix the off-by-one error (subtract 1 if we detected any fingers)
-    final_count = max(0, extended_fingers - 1) if extended_fingers > 0 else 0
+    # Check thumb
+    thumb_extended = is_thumb_extended(points)
+    
+    # Check each finger
+    fingers_extended = [
+        thumb_extended,  # Thumb
+        is_finger_extended(8, 7, 6, 5),    # Index
+        is_finger_extended(12, 11, 10, 9),  # Middle
+        is_finger_extended(16, 15, 14, 13), # Ring
+        is_finger_extended(20, 19, 18, 17)  # Pinky
+    ]
+    
+    # Count total extended fingers
+    count = sum(1 for extended in fingers_extended if extended)
     
     return {
-        "total_count": int(final_count)
+        "total_count": int(count)
     }
+
 
 def process_frame(base64_frame: str) -> Dict[str, Any]:
     """Process a single frame and detect hands"""
