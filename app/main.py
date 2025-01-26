@@ -132,48 +132,12 @@ def count_fingers(landmarks) -> dict:
 def process_frame(base64_frame: str) -> Dict[str, Any]:
     """Process a single frame and detect hands"""
     try:
-        if not base64_frame:
-            logger.warning("Received empty frame")
-            return {"hands": []}
-
-        # Split the base64 string
-        try:
-            header, b64_data = base64_frame.split(',', 1)
-            if not b64_data:
-                logger.warning("Empty base64 data after split")
-                return {"hands": []}
-        except ValueError:
-            logger.warning("Invalid base64 format")
-            return {"hands": []}
-
         # Decode base64 image
-        try:
-            img_data = base64.b64decode(b64_data)
-            if not img_data:
-                logger.warning("Base64 decode resulted in empty data")
-                return {"hands": []}
-        except Exception as e:
-            logger.error(f"Base64 decode error: {str(e)}")
-            return {"hands": []}
-
-        # Convert to numpy array
-        try:
-            nparr = np.frombuffer(img_data, np.uint8)
-            if nparr.size == 0:
-                logger.warning("Empty numpy array after frombuffer")
-                return {"hands": []}
-        except Exception as e:
-            logger.error(f"Numpy frombuffer error: {str(e)}")
-            return {"hands": []}
-
-        # Decode image
+        img_data = base64.b64decode(base64_frame.split(',')[1])
+        nparr = np.frombuffer(img_data, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if frame is None:
-            logger.warning("Failed to decode image")
-            return {"hands": []}
         
-        if frame.size == 0:
-            logger.warning("Decoded image is empty")
+        if frame is None:
             return {"hands": []}
 
         # Convert to RGB for MediaPipe
@@ -218,46 +182,21 @@ async def websocket_endpoint(websocket: WebSocket):
             try:
                 data = await websocket.receive_text()
                 
-                # Validate incoming data
-                if not data:
-                    logger.warning(f"Received empty data from client {client_id}")
-                    continue
-                    
-                if ',' not in data or 'data:image' not in data:
-                    logger.warning(f"Received invalid data format from client {client_id}")
+                if ',' not in data:
                     await websocket.send_json({
-                        "error": "Invalid data format. Expected base64 image data.",
+                        "error": "Invalid data format",
                         "hands": []
                     })
-                    continue
-
-                try:
-                    # Basic base64 validation
-                    img_data = data.split(',')[1]
-                    if not img_data:
-                        logger.warning(f"Empty image data from client {client_id}")
-                        continue
-                except IndexError:
-                    logger.warning(f"Invalid base64 format from client {client_id}")
                     continue
                 
                 # Process frame and send immediate update
                 frame_data = process_frame(data)
-                if frame_data and frame_data.get("hands") is not None:
-                    update = state_tracker.add_frame_data(frame_data["hands"])
-                    if update:
-                        await websocket.send_json(update)
+                update = state_tracker.add_frame_data(frame_data["hands"])
+                await websocket.send_json(update)
                 
             except WebSocketDisconnect:
                 logger.warning(f"Client {client_id} disconnected")
                 break
-                
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON encoding error for client {client_id}: {str(e)}")
-                await websocket.send_json({
-                    "error": "Failed to encode response",
-                    "hands": []
-                })
                 
             except Exception as e:
                 logger.error(f"Error processing frame for client {client_id}: {str(e)}", exc_info=True)
