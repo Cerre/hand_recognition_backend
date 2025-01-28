@@ -54,6 +54,8 @@ class GestureStateTracker:
             else:
                 right_hand = hand['finger_count']
         
+        logger.debug(f"Processed frame data - Left hand: {left_hand}, Right hand: {right_hand}")
+        
         # Return immediate update
         return {
             "type": "score_update",
@@ -106,7 +108,6 @@ def count_fingers(landmarks) -> dict:
         angle = get_angle_between_vectors(thumb_vector, index_vector)
         
         # Thumb is extended if it's at a significant angle from the index finger
-        # The angle should be large (thumb pointing away from fingers)
         return angle > 45
     
     # Check thumb
@@ -123,22 +124,36 @@ def count_fingers(landmarks) -> dict:
     
     # Count total extended fingers
     count = sum(1 for extended in fingers_extended if extended)
+    logger.debug(f"Detected {count} extended fingers - Extended status: {fingers_extended}")
     
     return {
         "total_count": int(count)
     }
 
-
 def process_frame(base64_frame: str) -> Dict[str, Any]:
     """Process a single frame and detect hands"""
     try:
+        # Log frame size for debugging
+        frame_size = len(base64_frame)
+        logger.info(f"Received frame of size: {frame_size} bytes")
+        
         # Decode base64 image
-        img_data = base64.b64decode(base64_frame.split(',')[1])
+        try:
+            img_data = base64.b64decode(base64_frame.split(',')[1])
+            logger.debug(f"Successfully decoded base64 image, size: {len(img_data)} bytes")
+        except Exception as e:
+            logger.error(f"Failed to decode base64 image: {str(e)}")
+            return {"hands": []}
+
         nparr = np.frombuffer(img_data, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
         if frame is None:
+            logger.warning("Failed to decode image from numpy array")
             return {"hands": []}
+
+        # Log frame dimensions
+        logger.debug(f"Frame dimensions: {frame.shape}")
 
         # Convert to RGB for MediaPipe
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -147,14 +162,19 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
         # Process detected hands
         hand_data = []
         if results.multi_hand_landmarks:
+            logger.info(f"Detected {len(results.multi_hand_landmarks)} hands in frame")
             for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
                 # Get finger data
                 finger_data = count_fingers(hand_landmarks.landmark)
                 
-                hand_data.append({
+                hand_info = {
                     'handedness': str(handedness.classification[0].label),
                     'finger_count': int(finger_data['total_count'])
-                })
+                }
+                logger.debug(f"Processed hand: {hand_info}")
+                hand_data.append(hand_info)
+        else:
+            logger.debug("No hands detected in frame")
                 
         return {"hands": hand_data}
         
@@ -173,6 +193,7 @@ async def websocket_endpoint(websocket: WebSocket):
     logger.info(f"New client {client_id} attempting to connect")
     
     state_tracker = GestureStateTracker()
+    frame_count = 0
     
     try:
         await websocket.accept()
@@ -180,9 +201,13 @@ async def websocket_endpoint(websocket: WebSocket):
         
         while True:
             try:
+                frame_count += 1
+                logger.info(f"Processing frame {frame_count} for client {client_id}")
+                
                 data = await websocket.receive_text()
                 
                 if ',' not in data:
+                    logger.warning(f"Client {client_id} sent invalid data format")
                     await websocket.send_json({
                         "error": "Invalid data format",
                         "hands": []
@@ -191,15 +216,19 @@ async def websocket_endpoint(websocket: WebSocket):
                 
                 # Process frame and send immediate update
                 frame_data = process_frame(data)
+                logger.debug(f"Frame {frame_count} processing results: {frame_data}")
+                
                 update = state_tracker.add_frame_data(frame_data["hands"])
+                logger.debug(f"Sending update to client {client_id}: {update}")
+                
                 await websocket.send_json(update)
                 
             except WebSocketDisconnect:
-                logger.warning(f"Client {client_id} disconnected")
+                logger.warning(f"Client {client_id} disconnected after processing {frame_count} frames")
                 break
                 
             except Exception as e:
-                logger.error(f"Error processing frame for client {client_id}: {str(e)}", exc_info=True)
+                logger.error(f"Error processing frame {frame_count} for client {client_id}: {str(e)}", exc_info=True)
                 try:
                     await websocket.send_json({
                         "error": "Internal server error",
@@ -213,4 +242,4 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"Failed to establish WebSocket connection for client {client_id}: {str(e)}", exc_info=True)
         
     finally:
-        logger.info(f"WebSocket connection closed for client {client_id}")
+        logger.info(f"WebSocket connection closed for client {client_id}. Total frames processed: {frame_count}")
