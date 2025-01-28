@@ -211,21 +211,46 @@ async def root():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     client_id = id(websocket)
-    logger.info(f"New client {client_id} attempting to connect")
+    logger.info(f"New client {client_id} attempting to connect from {websocket.client.host}")
     
     state_tracker = GestureStateTracker()
     frame_count = 0
+    last_frame_time = time()
     
     try:
         await websocket.accept()
         logger.info(f"Client {client_id} connected successfully")
         
+        # Send initial connection success message
+        try:
+            await websocket.send_json({"status": "connected"})
+        except Exception as e:
+            logger.error(f"Failed to send initial connection message to client {client_id}: {str(e)}")
+            return
+        
         while True:
             try:
-                frame_count += 1
-                logger.info(f"Processing frame {frame_count} for client {client_id}")
+                # Add timeout logging
+                current_time = time()
+                if current_time - last_frame_time > 5:  # Log if more than 5 seconds between frames
+                    logger.warning(f"Long delay between frames for client {client_id}: {current_time - last_frame_time:.2f} seconds")
                 
-                data = await websocket.receive_text()
+                frame_count += 1
+                logger.debug(f"Processing frame {frame_count} for client {client_id}")
+                
+                try:
+                    data = await websocket.receive_text()
+                    last_frame_time = time()
+                except WebSocketDisconnect as e:
+                    logger.info(f"Client {client_id} disconnected normally while receiving frame {frame_count}")
+                    break
+                except Exception as e:
+                    logger.error(f"Error receiving frame from client {client_id}: {str(e)}")
+                    break
+                
+                if not data:
+                    logger.warning(f"Empty frame received from client {client_id}")
+                    continue
                 
                 if ',' not in data:
                     logger.warning(f"Client {client_id} sent invalid data format")
@@ -242,10 +267,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 update = state_tracker.add_frame_data(frame_data["hands"])
                 logger.debug(f"Sending update to client {client_id}: {update}")
                 
-                await websocket.send_json(update)
+                try:
+                    await websocket.send_json(update)
+                except Exception as e:
+                    logger.error(f"Failed to send update to client {client_id}: {str(e)}")
+                    break
                 
             except WebSocketDisconnect:
-                logger.warning(f"Client {client_id} disconnected after processing {frame_count} frames")
+                logger.info(f"Client {client_id} disconnected normally after processing {frame_count} frames")
                 break
                 
             except Exception as e:
