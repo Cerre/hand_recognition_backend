@@ -183,7 +183,7 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
         # Process detected hands
         hand_data = []
         if results.multi_hand_landmarks:
-            logger.info(f"Detected {len(results.multi_hand_landmarks)} hands in frame")
+            logger.debug(f"Detected {len(results.multi_hand_landmarks)} hands in frame")
             for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
                 # Get finger data
                 finger_data = count_fingers(hand_landmarks.landmark)
