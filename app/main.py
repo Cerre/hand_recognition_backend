@@ -133,23 +133,44 @@ def count_fingers(landmarks) -> dict:
 def process_frame(base64_frame: str) -> Dict[str, Any]:
     """Process a single frame and detect hands"""
     try:
+        # Check for empty or invalid frame data
+        if not base64_frame or base64_frame == "data:,":
+            logger.debug("Received empty frame during camera initialization")
+            return {"hands": []}
+
         # Log frame size for debugging
         frame_size = len(base64_frame)
-        logger.info(f"Received frame of size: {frame_size} bytes")
+        logger.debug(f"Received frame of size: {frame_size} bytes")
+        
+        # Validate base64 format
+        if ',' not in base64_frame or ';base64,' not in base64_frame:
+            logger.debug("Received invalid base64 format during camera initialization")
+            return {"hands": []}
         
         # Decode base64 image
         try:
             img_data = base64.b64decode(base64_frame.split(',')[1])
+            if not img_data:
+                logger.debug("Decoded image data is empty")
+                return {"hands": []}
             logger.debug(f"Successfully decoded base64 image, size: {len(img_data)} bytes")
         except Exception as e:
-            logger.error(f"Failed to decode base64 image: {str(e)}")
+            logger.debug(f"Base64 decoding failed during camera initialization: {str(e)}")
             return {"hands": []}
 
+        # Check for empty image data
+        if len(img_data) < 100:  # Arbitrary small size threshold for invalid frames
+            logger.debug("Image data too small to be valid frame")
+            return {"hands": []}
+            
         nparr = np.frombuffer(img_data, np.uint8)
+        if nparr.size == 0:
+            logger.debug("Empty numpy array during camera initialization")
+            return {"hands": []}
+            
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
         if frame is None:
-            logger.warning("Failed to decode image from numpy array")
+            logger.debug("Failed to decode image during camera initialization")
             return {"hands": []}
 
         # Log frame dimensions
