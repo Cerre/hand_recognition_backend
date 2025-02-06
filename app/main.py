@@ -149,7 +149,7 @@ def count_fingers_by_distance(landmarks, handedness) -> dict:
     # Get reference length (palm width) for normalization
     palm_width = np.linalg.norm(points[5] - points[17])  # Distance between index and pinky MCP
     
-    def is_finger_extended(tip_idx: int, threshold: float = 0.7) -> bool:
+    def is_finger_extended(tip_idx: int, threshold: float = 1) -> bool:
         """Check if finger is extended based on normalized distance from palm"""
         distance = np.linalg.norm(points[tip_idx] - palm_center)
         normalized_distance = distance / palm_width
@@ -157,7 +157,7 @@ def count_fingers_by_distance(landmarks, handedness) -> dict:
     
     # Check each fingertip
     fingers_extended = [
-        is_finger_extended(4, 0.6),    # Thumb (lower threshold)
+        is_finger_extended(4, 0.8),    # Thumb (lower threshold)
         is_finger_extended(8),         # Index 
         is_finger_extended(12),        # Middle
         is_finger_extended(16),        # Ring
