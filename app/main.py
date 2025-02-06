@@ -129,6 +129,62 @@ def count_fingers(landmarks) -> dict:
     return {
         "total_count": int(count)
     }
+def count_fingers_by_distance(landmarks, handedness) -> dict:
+    """
+    Count extended fingers using distances from palm center.
+    
+    Args:
+        landmarks: List of MediaPipe hand landmarks
+        handedness: MediaPipe handedness classification
+        
+    Returns:
+        dict: Contains required hand info and additional debug/visualization data
+    """
+    points = np.array([[l.x, l.y, l.z] for l in landmarks])
+    
+    # Calculate palm center using wrist and MCP joints
+    palm_points = points[[0, 5, 9, 13, 17]]  # Wrist and all MCP joints
+    palm_center = np.mean(palm_points, axis=0)
+    
+    # Get reference length (palm width) for normalization
+    palm_width = np.linalg.norm(points[5] - points[17])  # Distance between index and pinky MCP
+    
+    def is_finger_extended(tip_idx: int, threshold: float = 0.7) -> bool:
+        """Check if finger is extended based on normalized distance from palm"""
+        distance = np.linalg.norm(points[tip_idx] - palm_center)
+        normalized_distance = distance / palm_width
+        return normalized_distance > threshold
+    
+    # Check each fingertip
+    fingers_extended = [
+        is_finger_extended(4, 0.6),    # Thumb (lower threshold)
+        is_finger_extended(8),         # Index 
+        is_finger_extended(12),        # Middle
+        is_finger_extended(16),        # Ring
+        is_finger_extended(20)         # Pinky
+    ]
+    
+    count = sum(fingers_extended)
+    
+    # Required hand info
+    hand_info = {
+        'handedness': str(handedness.classification[0].label),
+        'finger_count': int(count)
+    }
+    
+    # Additional data for debugging/visualization
+    debug_data = {
+        'palm_center': palm_center.tolist(),
+        'reference_length': float(palm_width),
+        'fingers_extended': fingers_extended,
+        'normalized_distances': [
+            float(np.linalg.norm(points[tip_idx] - palm_center) / palm_width)
+            for tip_idx in [4, 8, 12, 16, 20]
+        ]
+    }
+    
+    # Combine both dictionaries
+    return {**hand_info, **debug_data}
 
 def process_frame(base64_frame: str) -> Dict[str, Any]:
     """Process a single frame and detect hands"""
@@ -141,12 +197,12 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
         # Log frame size for debugging
         frame_size = len(base64_frame)
         logger.debug(f"Received frame of size: {frame_size} bytes")
-        
+
         # Validate base64 format
         if ',' not in base64_frame or ';base64,' not in base64_frame:
             logger.debug("Received invalid base64 format during camera initialization")
             return {"hands": []}
-        
+
         # Decode base64 image
         try:
             img_data = base64.b64decode(base64_frame.split(',')[1])
@@ -162,12 +218,12 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
         if len(img_data) < 100:  # Arbitrary small size threshold for invalid frames
             logger.debug("Image data too small to be valid frame")
             return {"hands": []}
-            
+
         nparr = np.frombuffer(img_data, np.uint8)
         if nparr.size == 0:
             logger.debug("Empty numpy array during camera initialization")
             return {"hands": []}
-            
+
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if frame is None:
             logger.debug("Failed to decode image during camera initialization")
@@ -179,26 +235,32 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
         # Convert to RGB for MediaPipe
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = hands.process(frame_rgb)
-        
+
         # Process detected hands
         hand_data = []
         if results.multi_hand_landmarks:
             logger.debug(f"Detected {len(results.multi_hand_landmarks)} hands in frame")
             for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
-                # Get finger data
-                finger_data = count_fingers(hand_landmarks.landmark)
+                # Get finger data using new distance-based method
+                finger_results = count_fingers_by_distance(hand_landmarks.landmark, handedness)
                 
+                # Extract required hand info
                 hand_info = {
-                    'handedness': str(handedness.classification[0].label),
-                    'finger_count': int(finger_data['total_count'])
+                    'handedness': finger_results['handedness'],
+                    'finger_count': finger_results['finger_count'],
+                    'palm_center': finger_results['palm_center'],
+                    'reference_length': finger_results['reference_length'],
+                    'fingers_extended': finger_results['fingers_extended'],
+                    'normalized_distances': finger_results['normalized_distances']
                 }
+                
                 logger.debug(f"Processed hand: {hand_info}")
                 hand_data.append(hand_info)
         else:
             logger.debug("No hands detected in frame")
-                
+
         return {"hands": hand_data}
-        
+
     except Exception as e:
         logger.error(f"Error in process_frame: {str(e)}", exc_info=True)
         return {"hands": []}
