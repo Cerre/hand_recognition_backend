@@ -9,7 +9,8 @@ import os
 from time import time
 
 # Import hand_recognition package
-from hand_recognition import HandDetector, GestureAnalyzer
+from hand_recognition import HandDetector
+from tools.xgboost_predictor import xgboost_method
 
 # Set up logging
 logging.basicConfig(
@@ -36,7 +37,23 @@ detector = HandDetector(
     min_detection_confidence=0.7,
     min_tracking_confidence=0.7
 )
-gesture_analyzer = GestureAnalyzer()
+
+def count_fingers(landmarks: np.ndarray) -> int:
+    """Count number of extended fingers using XGBoost method."""
+    finger_indices = [
+        (4, 3, 2, 1),    # Thumb
+        (8, 7, 6, 5),    # Index
+        (12, 11, 10, 9), # Middle
+        (16, 15, 14, 13),# Ring
+        (20, 19, 18, 17) # Pinky
+    ]
+    
+    extended = 0
+    for tip_idx, dip_idx, pip_idx, mcp_idx in finger_indices:
+        if xgboost_method(landmarks, tip_idx, dip_idx, pip_idx, mcp_idx):
+            extended += 1
+    
+    return extended
 
 class GestureStateTracker:
     def __init__(self):
@@ -116,13 +133,13 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
         # Use HandDetector to find hands
         frame, hands_data = detector.find_hands(frame_rgb)
         
-        # Process each hand with GestureAnalyzer
+        # Process each hand with XGBoost method
         processed_hands = []
         for hand_data in hands_data:
-            analysis = gesture_analyzer.analyze_hand(hand_data)
+            finger_count = count_fingers(hand_data['landmarks'])
             processed_hands.append({
-                'handedness': analysis['handedness'],
-                'finger_count': analysis['finger_count']
+                'handedness': hand_data['handedness'],
+                'finger_count': finger_count
             })
 
         return {"hands": processed_hands}

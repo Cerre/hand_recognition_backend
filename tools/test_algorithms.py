@@ -140,17 +140,9 @@ def main():
     dataset = load_dataset(base_dir)
     print(f"Loaded {len(dataset)} samples")
     
-    # Test all methods
-    methods = [
-        (angle_based_method, "Angle-based Method"),
-        (adaptive_threshold_method, "Adaptive Threshold Method"),
-        (palm_distance_method, "Palm Distance Method"),
-        (xgboost_method, "XGBoost Method")
-    ]
-    
-    for method, name in methods:
-        results = evaluate_method(dataset, method, name)
-        print_results(results, name)
+    # Only evaluate XGBoost method
+    results = evaluate_method(dataset, xgboost_method, "XGBoost Method")
+    print_results(results, "XGBoost Method")
 
 if __name__ == "__main__":
     main() 

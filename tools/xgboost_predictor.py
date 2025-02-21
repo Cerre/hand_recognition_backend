@@ -2,7 +2,12 @@ import numpy as np
 import xgboost as xgb
 import joblib
 from pathlib import Path
-from train_xgboost_model import extract_features
+import sys
+import os
+
+# Add parent directory to path to import train_xgboost_model
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tools.train_xgboost_model import extract_features
 
 class XGBoostPredictor:
     def __init__(self):
