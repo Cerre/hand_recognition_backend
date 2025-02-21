@@ -56,21 +56,20 @@ def compute_thumb_bend_angle(landmarks: np.ndarray) -> float:
 
 def extract_thumb_features(landmarks: np.ndarray) -> np.ndarray:
     """Extract thumb-specific features."""
-    # Thumb angles
+    # Thumb angles between segments (rotation-invariant)
     thumb_angles = [
         compute_thumb_bend_angle(landmarks),  # Bend angle at IP joint
         compute_angle(landmarks[3], landmarks[2], landmarks[1]),  # DIP-PIP-MCP
         compute_angle(landmarks[2], landmarks[1], landmarks[0])   # PIP-MCP-WRIST
     ]
     
-    # Thumb position relative to index finger
+    # Thumb position relative to index finger (rotation-invariant)
     thumb_index_dist = normalize_distance(landmarks[4], landmarks[8])
     
-    # Thumb orientation relative to palm
-    palm_center = compute_palm_center(landmarks)
-    thumb_palm_angle = compute_angle(landmarks[4], landmarks[1], palm_center)
+    # Thumb angle relative to index finger (rotation-invariant)
+    thumb_index_angle = compute_angle(landmarks[4], landmarks[1], landmarks[5])
     
-    return np.array([*thumb_angles, thumb_index_dist, thumb_palm_angle])
+    return np.array([*thumb_angles, thumb_index_dist, thumb_index_angle])
 
 def extract_features(landmarks: np.ndarray) -> np.ndarray:
     """Extract features from hand landmarks."""
@@ -79,7 +78,7 @@ def extract_features(landmarks: np.ndarray) -> np.ndarray:
     palm_center = compute_palm_center(landmarks)
     landmarks_normalized = (landmarks - palm_center) / hand_size
     
-    # 1. Finger angles
+    # 1. Finger angles (rotation-invariant)
     finger_angles = []
     for tip, pip, mcp in [(8,6,5), (12,10,9), (16,14,13), (20,18,17)]:
         angle = compute_angle(landmarks_normalized[tip], 
@@ -87,35 +86,36 @@ def extract_features(landmarks: np.ndarray) -> np.ndarray:
                             landmarks_normalized[mcp])
         finger_angles.append(angle)
     
-    # 2. Distances from palm center
+    # 2. Distances from palm center (rotation-invariant)
     tip_distances = []
     for tip in [4, 8, 12, 16, 20]:  # all fingertips
         dist = normalize_distance(landmarks_normalized[tip], np.zeros(3))
         tip_distances.append(dist)
     
-    # 3. Relative heights
-    height_features = []
-    for tip in [4, 8, 12, 16, 20]:
-        relative_height = landmarks_normalized[tip][1]
-        height_features.append(relative_height)
-    
-    # 4. Inter-finger relationships (between adjacent fingertips)
+    # 3. Inter-finger relationships (rotation-invariant)
     finger_spreads = []
     tips = [4, 8, 12, 16, 20]  # thumb and fingertips
     for i in range(len(tips)-1):
+        # Distance between adjacent fingertips
         tip1, tip2 = landmarks_normalized[tips[i]], landmarks_normalized[tips[i+1]]
         spread = normalize_distance(tip1, tip2)
         finger_spreads.append(spread)
+        
+        # Angle between adjacent fingers
+        if i > 0:  # Skip thumb-index angle (already in thumb features)
+            base1 = landmarks_normalized[tips[i]-3]  # MCP joint of first finger
+            base2 = landmarks_normalized[tips[i+1]-3]  # MCP joint of second finger
+            angle = compute_angle(tip1, base1, tip2)
+            finger_spreads.append(angle)
     
-    # 5. Thumb specific features
+    # 4. Thumb specific features (rotation-invariant)
     thumb_features = extract_thumb_features(landmarks_normalized)
     
     # Combine all features
     features = np.concatenate([
         finger_angles,      # 4 features
         tip_distances,      # 5 features
-        height_features,    # 5 features
-        finger_spreads,     # 4 features
+        finger_spreads,     # 7 features (4 distances + 3 angles)
         thumb_features      # 5 features
     ])
     

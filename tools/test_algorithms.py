@@ -99,7 +99,7 @@ def evaluate_method(dataset: List[Dict], method, method_name: str) -> Dict:
     
     return results
 
-def print_results(results: Dict, method_name: str):
+def print_results(results: Dict, method_name: str, dataset: List[Dict]):
     """Print evaluation results in a readable format."""
     print(f"\n=== Results for {method_name} ===")
     print(f"Overall accuracy: {results['correct'] / results['total']:.2%}")
@@ -121,6 +121,25 @@ def print_results(results: Dict, method_name: str):
         stats = results['by_person'][person]
         accuracy = stats['correct'] / stats['total']
         print(f"  {person}: {accuracy:.2%} ({stats['correct']}/{stats['total']})")
+        
+        # For person3, break down by augmentation type
+        if person == 'person3':
+            print("\nAccuracy by augmentation type (person3):")
+            augmentation_results = defaultdict(lambda: {'correct': 0, 'total': 0})
+            
+            # Analyze each sample in person3
+            for data in dataset:
+                if data['person_id'] == 'person3':
+                    aug_type = data.get('augmentation', 'original')
+                    predicted = count_extended_fingers(np.array(data['landmarks']), xgboost_method)
+                    augmentation_results[aug_type]['total'] += 1
+                    if predicted == data['expected_number']:
+                        augmentation_results[aug_type]['correct'] += 1
+            
+            # Print results for each augmentation type
+            for aug_type, stats in sorted(augmentation_results.items()):
+                accuracy = stats['correct'] / stats['total']
+                print(f"    {aug_type}: {accuracy:.2%} ({stats['correct']}/{stats['total']})")
     
     print("\nConfusion Matrix:")
     print("  Actual → Predicted")
@@ -142,7 +161,7 @@ def main():
     
     # Only evaluate XGBoost method
     results = evaluate_method(dataset, xgboost_method, "XGBoost Method")
-    print_results(results, "XGBoost Method")
+    print_results(results, "XGBoost Method", dataset)
 
 if __name__ == "__main__":
     main() 
