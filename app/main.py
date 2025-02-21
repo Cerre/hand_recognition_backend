@@ -1,15 +1,15 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-import mediapipe as mp
 import cv2
 import numpy as np
 import base64
-import json
 import logging
 from typing import Dict, List, Any
 import os
-from collections import deque
 from time import time
+
+# Import hand_recognition package
+from hand_recognition import HandDetector, GestureAnalyzer
 
 # Set up logging
 logging.basicConfig(
@@ -29,18 +29,18 @@ app.add_middleware(
     max_age=3600,
 )
 
-# Initialize MediaPipe
-mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(
+# Initialize hand detection components
+detector = HandDetector(
     static_image_mode=False,
     max_num_hands=2,
     min_detection_confidence=0.7,
     min_tracking_confidence=0.7
 )
+gesture_analyzer = GestureAnalyzer()
 
 class GestureStateTracker:
     def __init__(self):
-        pass  # No initialization needed anymore
+        pass  # No initialization needed
 
     def add_frame_data(self, hands_data: List[Dict]) -> Dict:
         """Simply process the current frame data and return results"""
@@ -112,32 +112,20 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
 
         # Convert to RGB for MediaPipe
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = hands.process(frame_rgb)
+        
+        # Use HandDetector to find hands
+        frame, hands_data = detector.find_hands(frame_rgb)
+        
+        # Process each hand with GestureAnalyzer
+        processed_hands = []
+        for hand_data in hands_data:
+            analysis = gesture_analyzer.analyze_hand(hand_data)
+            processed_hands.append({
+                'handedness': analysis['handedness'],
+                'finger_count': analysis['finger_count']
+            })
 
-        # Process detected hands
-        hand_data = []
-        if results.multi_hand_landmarks:
-            logger.debug(f"Detected {len(results.multi_hand_landmarks)} hands in frame")
-            for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
-                # Get finger data using new distance-based method
-                finger_results = count_fingers_by_distance(hand_landmarks.landmark, handedness)
-                
-                # Extract required hand info
-                hand_info = {
-                    'handedness': finger_results['handedness'],
-                    'finger_count': finger_results['finger_count'],
-                    'palm_center': finger_results['palm_center'],
-                    'reference_length': finger_results['reference_length'],
-                    'fingers_extended': finger_results['fingers_extended'],
-                    'normalized_distances': finger_results['normalized_distances']
-                }
-                
-                logger.debug(f"Processed hand: {hand_info}")
-                hand_data.append(hand_info)
-        else:
-            logger.debug("No hands detected in frame")
-
-        return {"hands": hand_data}
+        return {"hands": processed_hands}
 
     except Exception as e:
         logger.error(f"Error in process_frame: {str(e)}", exc_info=True)
