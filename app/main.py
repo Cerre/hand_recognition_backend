@@ -59,8 +59,8 @@ class GestureStateTracker:
         # Return immediate update
         return {
             "type": "score_update",
-            "player": left_hand,   # Player number from left hand
-            "points": right_hand,  # Points from right hand
+            "player": right_hand,   # Player number from right hand
+            "points": left_hand,    # Points from left hand
             "timestamp": time()
         }
 

@@ -2,6 +2,19 @@ import numpy as np
 from typing import Dict, List
 
 class GestureAnalyzer:
+    """Analyzes hand gestures using MediaPipe hand landmarks.
+    
+    The hand landmark model detects 21 3D landmarks on a hand:
+    - Wrist: 0
+    - Thumb: 1-4 (from base to tip)
+    - Index: 5-8 (from base to tip)
+    - Middle: 9-12 (from base to tip)
+    - Ring: 13-16 (from base to tip)
+    - Pinky: 17-20 (from base to tip)
+    
+    Reference: https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker
+    """
+
     def __init__(self):
         """Initialize the GestureAnalyzer."""
         pass
@@ -30,6 +43,12 @@ class GestureAnalyzer:
     ) -> bool:
         """Check if a finger is extended based on joint angles.
         
+        Each finger (except thumb) has 4 landmarks:
+        - MCP (Metacarpophalangeal) - Base joint
+        - PIP (Proximal Interphalangeal) - First joint
+        - DIP (Distal Interphalangeal) - Second joint
+        - TIP - Fingertip
+        
         Args:
             points: Array of hand landmarks
             tip_idx: Index of fingertip
@@ -55,6 +74,12 @@ class GestureAnalyzer:
     def is_thumb_extended(self, points: np.ndarray) -> bool:
         """Check if thumb is extended by comparing to index finger.
         
+        Thumb has a different structure than other fingers:
+        - CMC (Carpometacarpal) - 1
+        - MCP (Metacarpophalangeal) - 2
+        - IP (Interphalangeal) - 3
+        - TIP - 4
+        
         Args:
             points: Array of hand landmarks
             
@@ -62,9 +87,9 @@ class GestureAnalyzer:
             True if thumb is extended, False otherwise
         """
         # Get relevant points
-        thumb_tip = points[4]
-        thumb_base = points[2]
-        index_base = points[5]
+        thumb_tip = points[4]    # Thumb tip
+        thumb_base = points[2]   # Thumb MCP
+        index_base = points[5]   # Index finger MCP
         
         # Calculate vectors
         thumb_vector = thumb_tip - thumb_base
@@ -85,16 +110,16 @@ class GestureAnalyzer:
         """
         # Finger indices (tip, dip, pip, mcp)
         finger_indices = [
-            (8, 7, 6, 5),    # Index
-            (12, 11, 10, 9), # Middle
-            (16, 15, 14, 13),# Ring
-            (20, 19, 18, 17) # Pinky
+            (8, 7, 6, 5),    # Index finger landmarks
+            (12, 11, 10, 9), # Middle finger landmarks
+            (16, 15, 14, 13),# Ring finger landmarks
+            (20, 19, 18, 17) # Pinky finger landmarks
         ]
         
         # Count extended fingers
         extended_count = 0
         
-        # Check thumb separately
+        # Check thumb separately due to different structure
         if self.is_thumb_extended(landmarks):
             extended_count += 1
             
@@ -112,7 +137,11 @@ class GestureAnalyzer:
             hand_data: Dictionary containing hand landmarks and handedness
             
         Returns:
-            Dictionary with analysis results
+            Dictionary with analysis results including:
+            - handedness: 'Left' or 'Right'
+            - finger_count: Number of extended fingers (0-5)
+            - confidence: Detection confidence
+            - role: 'player' for left hand, 'points' for right hand
         """
         landmarks = hand_data['landmarks']
         handedness = hand_data['handedness']
