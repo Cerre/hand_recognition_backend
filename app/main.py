@@ -57,10 +57,18 @@ def count_fingers(landmarks: np.ndarray) -> int:
 
 class GestureStateTracker:
     def __init__(self):
-        pass  # No initialization needed
+        self.last_update_time = time()
+        self.min_update_interval = 1.0 / 30  # Cap at 30 FPS to reduce load
 
     def add_frame_data(self, hands_data: List[Dict]) -> Dict:
-        """Simply process the current frame data and return results"""
+        """Process the current frame data and return results"""
+        current_time = time()
+        time_since_last_update = current_time - self.last_update_time
+        
+        # If we're getting updates too quickly, return the last state
+        if time_since_last_update < self.min_update_interval:
+            return None
+            
         # Extract left and right hand data
         left_hand = None
         right_hand = None
@@ -71,37 +79,43 @@ class GestureStateTracker:
             else:
                 right_hand = hand['finger_count']
         
-        logger.debug(f"Processed frame data - Left hand: {left_hand}, Right hand: {right_hand}")
+        self.last_update_time = current_time
         
         # Return immediate update
         return {
             "type": "score_update",
             "player": right_hand,   # Player number from right hand
             "points": left_hand,    # Points from left hand
-            "timestamp": time()
+            "timestamp": current_time
         }
 
 def process_frame(base64_frame: str) -> Dict[str, Any]:
     """Process a single frame and detect hands"""
     try:
+        # Handle empty frames during initialization more gracefully
+        if not base64_frame:
+            return {"hands": [], "status": "waiting_for_camera"}
+        if base64_frame == "data:,":
+            return {"hands": [], "status": "camera_initializing"}
+
         # Quick validation of base64 data
-        if not base64_frame or ',' not in base64_frame:
-            return {"hands": []}
+        if ',' not in base64_frame:
+            return {"hands": [], "status": "invalid_frame"}
 
         # Decode base64 image
         try:
             img_data = base64.b64decode(base64_frame.split(',')[1])
             if not img_data:
-                return {"hands": []}
+                return {"hands": [], "status": "empty_frame"}
         except Exception as e:
             logger.warning(f"Base64 decoding failed: {str(e)}")
-            return {"hands": []}
+            return {"hands": [], "status": "decode_error"}
 
         # Convert to numpy array and decode image
         nparr = np.frombuffer(img_data, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if frame is None:
-            return {"hands": []}
+            return {"hands": [], "status": "invalid_image"}
 
         # Convert to RGB for MediaPipe
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -118,11 +132,11 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
                 'finger_count': finger_count
             })
 
-        return {"hands": processed_hands}
+        return {"hands": processed_hands, "status": "ok"}
 
     except Exception as e:
         logger.error(f"Error in process_frame: {str(e)}")
-        return {"hands": []}
+        return {"hands": [], "status": "error"}
 
 @app.get("/")
 async def root():
@@ -137,10 +151,14 @@ async def websocket_endpoint(websocket: WebSocket):
     state_tracker = GestureStateTracker()
     frame_count = 0
     last_frame_time = time()
+    connection_start_time = time()
     
     try:
         await websocket.accept()
-        await websocket.send_json({"status": "connected"})
+        await websocket.send_json({
+            "status": "connected",
+            "message": "Waiting for camera initialization"
+        })
         
         while True:
             try:
@@ -155,10 +173,24 @@ async def websocket_endpoint(websocket: WebSocket):
                 last_frame_time = current_time
                 frame_count += 1
                 
-                # Process frame and send update
+                # Process frame
                 frame_data = process_frame(data)
+                
+                # During first few seconds, send more detailed status updates
+                if current_time - connection_start_time < 5:
+                    if frame_data["status"] != "ok":
+                        await websocket.send_json({
+                            "type": "status_update",
+                            "status": frame_data["status"]
+                        })
+                        continue
+                
+                # Process hands data and get update
                 update = state_tracker.add_frame_data(frame_data["hands"])
-                await websocket.send_json(update)
+                
+                # Only send update if we have new data
+                if update is not None:
+                    await websocket.send_json(update)
                 
             except WebSocketDisconnect:
                 logger.info(f"Client {client_id} disconnected after {frame_count} frames")
@@ -166,7 +198,11 @@ async def websocket_endpoint(websocket: WebSocket):
             except Exception as e:
                 logger.error(f"Error processing frame: {str(e)}")
                 try:
-                    await websocket.send_json({"error": "Internal server error", "hands": []})
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "Internal server error",
+                        "hands": []
+                    })
                 except:
                     break
     except Exception as e:
