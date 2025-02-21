@@ -22,6 +22,8 @@ ENV/
 
 # Project specific
 debug_frames/
+data_output/
+ml_data/
 
 # Logs
 *.log

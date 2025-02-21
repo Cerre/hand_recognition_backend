@@ -15,8 +15,14 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Create models directory
+RUN mkdir -p models && chmod 777 models
+
 # Copy the rest of the application
 COPY . .
+
+# Ensure models directory has correct permissions
+RUN chmod -R 777 models
 
 # Command to run the application
 CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT}

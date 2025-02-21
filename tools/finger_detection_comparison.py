@@ -3,6 +3,7 @@ import numpy as np
 import sys
 import os
 from typing import List, Dict, Callable
+from xgboost_predictor import xgboost_method  # Add import at the top
 
 # Add parent directory to path to import hand_recognition
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -24,11 +25,28 @@ def angle_based_method(points: np.ndarray, tip_idx: int, dip_idx: int, pip_idx: 
     
     return angle1 < 35 and angle2 < 35
 
-def distance_based_method(points: np.ndarray, tip_idx: int, dip_idx: int, pip_idx: int, mcp_idx: int) -> bool:
-    """Alternative method: using vertical distance from tip to base."""
-    tip_y = points[tip_idx][1]
-    mcp_y = points[mcp_idx][1]
-    return (tip_y - mcp_y) > 0.2  # Finger is extended if tip is significantly above base
+def adaptive_threshold_method(points: np.ndarray, tip_idx: int, dip_idx: int, pip_idx: int, mcp_idx: int) -> bool:
+    """Adaptive method: using thresholds that adapt to hand size and orientation."""
+    # Calculate hand size (distance between wrist and middle finger MCP)
+    hand_size = np.linalg.norm(points[0] - points[9])
+    
+    # Calculate palm orientation
+    palm_direction = points[9] - points[0]  # Middle finger MCP to wrist
+    palm_angle = np.arctan2(palm_direction[1], palm_direction[0])
+    
+    # Adjust thresholds based on hand size and orientation
+    angle_threshold = 35 + (20 * abs(np.sin(palm_angle)))  # More lenient when hand is tilted
+    distance_threshold = 0.2 * (hand_size / 0.3)  # Scale with hand size
+    
+    # Get angles
+    tip_to_dip = points[tip_idx] - points[dip_idx]
+    dip_to_pip = points[dip_idx] - points[pip_idx]
+    angle = GestureAnalyzer().get_angle_between_vectors(tip_to_dip, dip_to_pip)
+    
+    # Get normalized vertical distance
+    vertical_dist = (points[tip_idx][1] - points[mcp_idx][1]) / hand_size
+    
+    return angle < angle_threshold and vertical_dist > distance_threshold
 
 def palm_distance_method(points: np.ndarray, tip_idx: int, dip_idx: int, pip_idx: int, mcp_idx: int) -> bool:
     """Method from main backend: using distances from palm center."""
@@ -58,8 +76,8 @@ _last_palm_center = None
 # Dictionary of methods to compare
 DETECTION_METHODS = {
     'angle_based': angle_based_method,
-    'distance_based': distance_based_method,
-    'palm_distance': palm_distance_method
+    'palm_distance': palm_distance_method,
+    'xgboost': xgboost_method
 }
 
 def draw_finger_status(frame: np.ndarray, hand_data: Dict, method: Callable, landmarks: np.ndarray, 
@@ -67,12 +85,13 @@ def draw_finger_status(frame: np.ndarray, hand_data: Dict, method: Callable, lan
     """Draw finger detection results for a specific method."""
     h, w, _ = frame.shape
     
-    def draw_point(point: np.ndarray, label: str = None):
+    def draw_point(point: np.ndarray, label: str = None, is_base: bool = False):
         """Helper to draw a point with optional label."""
         px = (point[:2] * [w, h]).astype(int)
-        cv2.circle(frame, px, 4, color, -1)  # Filled circle
-        cv2.circle(frame, px, 4, (255, 255, 255), 1)  # White border
-        if label:
+        point_color = (0, 0, 255) if is_base else color  # Pure blue for base points
+        cv2.circle(frame, px, 5, point_color, -1)  # Filled circle, slightly larger
+        cv2.circle(frame, px, 5, (255, 255, 255), 1)  # White border
+        if label == "Tip":  # Only show Tip labels
             cv2.putText(
                 frame,
                 label,
@@ -80,7 +99,7 @@ def draw_finger_status(frame: np.ndarray, hand_data: Dict, method: Callable, lan
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.4,
                 color,
-                1
+                2  # Thicker text
             )
         return px
 
@@ -88,7 +107,7 @@ def draw_finger_status(frame: np.ndarray, hand_data: Dict, method: Callable, lan
         """Helper to draw a line between two points."""
         px1 = (p1[:2] * [w, h]).astype(int)
         px2 = (p2[:2] * [w, h]).astype(int)
-        cv2.line(frame, px1, px2, color, 1)
+        cv2.line(frame, px1, px2, color, 2)  # Thicker lines
     
     finger_indices = [
         ('Thumb', (4, 3, 2, 1)),
@@ -100,64 +119,76 @@ def draw_finger_status(frame: np.ndarray, hand_data: Dict, method: Callable, lan
     
     # Draw method-specific visualizations
     if method == palm_distance_method and _last_palm_center is not None:
-        # Draw palm center
-        palm_center_px = draw_point(_last_palm_center, "Palm Center")
-        
-        # Draw palm width reference
+        palm_center_px = draw_point(_last_palm_center)
         draw_line(landmarks[5], landmarks[17])
-        draw_point(landmarks[5], "Palm Width")
-        draw_point(landmarks[17])
+        draw_point(landmarks[5], is_base=True)
+        draw_point(landmarks[17], is_base=True)
         
-    elif method == distance_based_method:
-        # Draw horizontal reference line at wrist level
-        wrist_y = landmarks[0][1]
-        cv2.line(frame, (0, int(wrist_y * h)), (w, int(wrist_y * h)), color, 1)
+    elif method == adaptive_threshold_method:
+        draw_line(landmarks[0], landmarks[9])
+        palm_direction = landmarks[9] - landmarks[0]
+        palm_end = landmarks[0] + palm_direction * 0.5
+        draw_line(landmarks[0], palm_end)
         
     elif method == angle_based_method:
-        # Will draw angles during finger processing
         pass
     
-    y_offset = 0
+    # Calculate total extended fingers and build binary representation
+    finger_states = []
+    total_extended = 0
+    
     for finger_name, (tip_idx, dip_idx, pip_idx, mcp_idx) in finger_indices:
         is_extended = method(landmarks, tip_idx, dip_idx, pip_idx, mcp_idx)
-        status = "Extended" if is_extended else "Closed"
+        if is_extended:
+            total_extended += 1
+        finger_states.append('1' if is_extended else '0')
         
         # Draw measurement points and lines specific to each method
         if method == palm_distance_method and _last_palm_center is not None:
-            # Draw lines from palm center to tip and base
             tip_px = draw_point(landmarks[tip_idx], "Tip")
-            base_px = draw_point(landmarks[mcp_idx], "Base")
+            base_px = draw_point(landmarks[mcp_idx], is_base=True)
             palm_center_px = (_last_palm_center[:2] * [w, h]).astype(int)
             cv2.line(frame, palm_center_px, tip_px, color, 1)
             cv2.line(frame, palm_center_px, base_px, color, 1)
             
-        elif method == distance_based_method:
-            # Draw vertical distance measurement
+        elif method == adaptive_threshold_method:
             tip_px = draw_point(landmarks[tip_idx], "Tip")
-            base_px = draw_point(landmarks[mcp_idx], "Base")
-            cv2.line(frame, (tip_px[0], tip_px[1]), (tip_px[0], base_px[1]), color, 1)
+            base_px = draw_point(landmarks[mcp_idx], is_base=True)
+            finger_vector = landmarks[tip_idx] - landmarks[mcp_idx]
+            finger_end = landmarks[mcp_idx] + finger_vector * 0.5
+            draw_line(landmarks[mcp_idx], finger_end)
             
         elif method == angle_based_method:
-            # Draw angle measurement points and lines
             tip_px = draw_point(landmarks[tip_idx], "Tip")
-            dip_px = draw_point(landmarks[dip_idx], "DIP")
-            pip_px = draw_point(landmarks[pip_idx], "PIP")
-            mcp_px = draw_point(landmarks[mcp_idx], "MCP")
+            dip_px = draw_point(landmarks[dip_idx])
+            pip_px = draw_point(landmarks[pip_idx])
+            mcp_px = draw_point(landmarks[mcp_idx], is_base=True)
             cv2.line(frame, tip_px, dip_px, color, 1)
             cv2.line(frame, dip_px, pip_px, color, 1)
             cv2.line(frame, pip_px, mcp_px, color, 1)
-        
-        # Draw status text
-        cv2.putText(
-            frame,
-            f"{finger_name}: {status}",
-            (position[0], position[1] + y_offset),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            color,
-            1
-        )
-        y_offset += 20
+    
+    # Draw hand info and finger states
+    handedness = hand_data.get('handedness', 'Unknown')
+    cv2.putText(
+        frame,
+        f"{handedness} Hand - Count: {total_extended}",
+        (position[0], position[1]),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        color,
+        2
+    )
+    
+    # Draw binary representation
+    cv2.putText(
+        frame,
+        f"States: {' '.join(finger_states)}",
+        (position[0], position[1] + 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        color,
+        1
+    )
 
 def main():
     # Initialize camera
@@ -169,10 +200,20 @@ def main():
     # Initialize detector and analyzer
     detector = HandDetector()
     
-    # Window setup
+    # Window setup for fullscreen
     window_name = 'Finger Detection Methods Comparison'
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(window_name, 1280, 720)
+    
+    # Get screen resolution using xrandr
+    import subprocess
+    try:
+        output = subprocess.check_output('xrandr | grep "\*" | cut -d" " -f4', shell=True).decode()
+        screen_width, screen_height = map(int, output.split('x'))
+    except:
+        screen_width, screen_height = 1920, 1080  # Default fallback
+    
+    cv2.resizeWindow(window_name, screen_width, screen_height)
+    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
     
     print("\nControls:")
     print("  - ESC or Q: Quit")
@@ -189,6 +230,14 @@ def main():
 
         # Mirror the frame
         frame = cv2.flip(frame, 1)
+        
+        # Resize frame to fill the screen
+        frame = cv2.resize(frame, (screen_width, screen_height))
+
+        # Add a semi-transparent overlay at the top for better text visibility
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (0, 0), (screen_width, 100), (0, 0, 0), -1)
+        frame = cv2.addWeighted(overlay, 0.3, frame, 0.7, 0)
 
         # Detect hands
         frame, hands_data = detector.find_hands(frame, draw=True)
@@ -196,16 +245,28 @@ def main():
         # For each detected hand, show results from all methods
         for hand_idx, hand_data in enumerate(hands_data):
             landmarks = hand_data['landmarks']
+            handedness = hand_data.get('handedness', 'Unknown')
             
-            # Draw results for each method with different colors
-            colors = [(0, 255, 0), (255, 0, 0), (0, 0, 255)]  # Green, Blue, Red
-            x_positions = [10, 200, 400]  # Different x positions for each method
+            # Adjust x position based on handedness and screen width
+            base_positions = {
+                'Left': [int(screen_width * 0.02), int(screen_width * 0.15), int(screen_width * 0.28)],
+                'Right': [int(screen_width * 0.55), int(screen_width * 0.7), int(screen_width * 0.85)]
+            }
+            x_positions = base_positions.get(handedness, [int(screen_width * 0.02), int(screen_width * 0.15), int(screen_width * 0.28)])
+            
+            # Different colors for each method - more vibrant colors
+            colors = [
+                (0, 255, 0),    # Pure green
+                (255, 50, 50),  # Bright red
+                (50, 50, 255)   # Bright blue
+            ]
             
             for (method_name, method), color, x_pos in zip(DETECTION_METHODS.items(), colors, x_positions):
-                # Draw method name
+                # Draw method name with background
+                text_size = cv2.getTextSize(method_name, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
                 cv2.putText(
                     frame,
-                    f"Method: {method_name}",
+                    method_name,
                     (x_pos, 30),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.7,
