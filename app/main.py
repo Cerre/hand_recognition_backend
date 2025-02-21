@@ -12,9 +12,9 @@ from time import time
 from hand_recognition import HandDetector
 from tools.xgboost_predictor import xgboost_method
 
-# Set up logging
+# Set up logging - Change to WARNING to reduce overhead
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,  # Changed from INFO to WARNING
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -84,48 +84,24 @@ class GestureStateTracker:
 def process_frame(base64_frame: str) -> Dict[str, Any]:
     """Process a single frame and detect hands"""
     try:
-        # Check for empty or invalid frame data
-        if not base64_frame or base64_frame == "data:,":
-            logger.debug("Received empty frame during camera initialization")
-            return {"hands": []}
-
-        # Log frame size for debugging
-        frame_size = len(base64_frame)
-        logger.debug(f"Received frame of size: {frame_size} bytes")
-
-        # Validate base64 format
-        if ',' not in base64_frame or ';base64,' not in base64_frame:
-            logger.debug("Received invalid base64 format during camera initialization")
+        # Quick validation of base64 data
+        if not base64_frame or ',' not in base64_frame:
             return {"hands": []}
 
         # Decode base64 image
         try:
             img_data = base64.b64decode(base64_frame.split(',')[1])
             if not img_data:
-                logger.debug("Decoded image data is empty")
                 return {"hands": []}
-            logger.debug(f"Successfully decoded base64 image, size: {len(img_data)} bytes")
         except Exception as e:
-            logger.debug(f"Base64 decoding failed during camera initialization: {str(e)}")
+            logger.warning(f"Base64 decoding failed: {str(e)}")
             return {"hands": []}
 
-        # Check for empty image data
-        if len(img_data) < 100:  # Arbitrary small size threshold for invalid frames
-            logger.debug("Image data too small to be valid frame")
-            return {"hands": []}
-
+        # Convert to numpy array and decode image
         nparr = np.frombuffer(img_data, np.uint8)
-        if nparr.size == 0:
-            logger.debug("Empty numpy array during camera initialization")
-            return {"hands": []}
-
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if frame is None:
-            logger.debug("Failed to decode image during camera initialization")
             return {"hands": []}
-
-        # Log frame dimensions
-        logger.debug(f"Frame dimensions: {frame.shape}")
 
         # Convert to RGB for MediaPipe
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -145,7 +121,7 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
         return {"hands": processed_hands}
 
     except Exception as e:
-        logger.error(f"Error in process_frame: {str(e)}", exc_info=True)
+        logger.error(f"Error in process_frame: {str(e)}")
         return {"hands": []}
 
 @app.get("/")
@@ -156,7 +132,7 @@ async def root():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     client_id = id(websocket)
-    logger.info(f"New client {client_id} attempting to connect from {websocket.client.host}")
+    logger.info(f"New client {client_id} connected from {websocket.client.host}")
     
     state_tracker = GestureStateTracker()
     frame_count = 0
@@ -164,77 +140,36 @@ async def websocket_endpoint(websocket: WebSocket):
     
     try:
         await websocket.accept()
-        logger.info(f"Client {client_id} connected successfully")
-        
-        # Send initial connection success message
-        try:
-            await websocket.send_json({"status": "connected"})
-        except Exception as e:
-            logger.error(f"Failed to send initial connection message to client {client_id}: {str(e)}")
-            return
+        await websocket.send_json({"status": "connected"})
         
         while True:
             try:
-                # Add timeout logging
+                # Process frame
+                data = await websocket.receive_text()
                 current_time = time()
-                if current_time - last_frame_time > 5:  # Log if more than 5 seconds between frames
-                    logger.warning(f"Long delay between frames for client {client_id}: {current_time - last_frame_time:.2f} seconds")
                 
+                # Only log if there's a significant delay
+                if current_time - last_frame_time > 5:
+                    logger.warning(f"Long delay between frames: {current_time - last_frame_time:.2f}s")
+                
+                last_frame_time = current_time
                 frame_count += 1
-                logger.debug(f"Processing frame {frame_count} for client {client_id}")
                 
-                try:
-                    data = await websocket.receive_text()
-                    last_frame_time = time()
-                except WebSocketDisconnect as e:
-                    logger.info(f"Client {client_id} disconnected normally while receiving frame {frame_count}")
-                    break
-                except Exception as e:
-                    logger.error(f"Error receiving frame from client {client_id}: {str(e)}")
-                    break
-                
-                if not data:
-                    logger.warning(f"Empty frame received from client {client_id}")
-                    continue
-                
-                if ',' not in data:
-                    logger.warning(f"Client {client_id} sent invalid data format")
-                    await websocket.send_json({
-                        "error": "Invalid data format",
-                        "hands": []
-                    })
-                    continue
-                
-                # Process frame and send immediate update
+                # Process frame and send update
                 frame_data = process_frame(data)
-                logger.debug(f"Frame {frame_count} processing results: {frame_data}")
-                
                 update = state_tracker.add_frame_data(frame_data["hands"])
-                logger.debug(f"Sending update to client {client_id}: {update}")
-                
-                try:
-                    await websocket.send_json(update)
-                except Exception as e:
-                    logger.error(f"Failed to send update to client {client_id}: {str(e)}")
-                    break
+                await websocket.send_json(update)
                 
             except WebSocketDisconnect:
-                logger.info(f"Client {client_id} disconnected normally after processing {frame_count} frames")
+                logger.info(f"Client {client_id} disconnected after {frame_count} frames")
                 break
-                
             except Exception as e:
-                logger.error(f"Error processing frame {frame_count} for client {client_id}: {str(e)}", exc_info=True)
+                logger.error(f"Error processing frame: {str(e)}")
                 try:
-                    await websocket.send_json({
-                        "error": "Internal server error",
-                        "hands": []
-                    })
+                    await websocket.send_json({"error": "Internal server error", "hands": []})
                 except:
-                    logger.error(f"Failed to send error message to client {client_id}")
                     break
-                    
     except Exception as e:
-        logger.error(f"Failed to establish WebSocket connection for client {client_id}: {str(e)}", exc_info=True)
-        
+        logger.error(f"WebSocket error: {str(e)}")
     finally:
-        logger.info(f"WebSocket connection closed for client {client_id}. Total frames processed: {frame_count}")
+        logger.info(f"Connection closed. Frames processed: {frame_count}")
