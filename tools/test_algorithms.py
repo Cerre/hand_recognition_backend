@@ -13,7 +13,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from finger_detection_comparison import (
     angle_based_method,
     adaptive_threshold_method,
-    palm_distance_method
+    palm_distance_method,
+    xgboost_method
 )
 
 def load_dataset(base_dir: Path) -> List[Dict]:
@@ -143,7 +144,8 @@ def main():
     methods = [
         (angle_based_method, "Angle-based Method"),
         (adaptive_threshold_method, "Adaptive Threshold Method"),
-        (palm_distance_method, "Palm Distance Method")
+        (palm_distance_method, "Palm Distance Method"),
+        (xgboost_method, "XGBoost Method")
     ]
     
     for method, name in methods:

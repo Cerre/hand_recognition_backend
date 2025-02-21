@@ -33,11 +33,32 @@ def normalize_distance(p1: np.ndarray, p2: np.ndarray) -> float:
     """Compute normalized distance between two points."""
     return np.linalg.norm(p1 - p2)
 
+def compute_thumb_bend_angle(landmarks: np.ndarray) -> float:
+    """Compute thumb bend angle using tip and two joints below.
+    
+    Uses:
+    - Thumb tip (4)
+    - IP joint (3)
+    - MCP joint (2)
+    """
+    tip = landmarks[4]    # Tip
+    ip = landmarks[3]     # IP joint
+    mcp = landmarks[2]    # MCP joint
+    
+    # Calculate angle between tip-IP and IP-MCP vectors
+    tip_to_ip = tip - ip
+    ip_to_mcp = ip - mcp
+    
+    # Calculate angle in degrees
+    cos_angle = np.dot(tip_to_ip, ip_to_mcp) / (np.linalg.norm(tip_to_ip) * np.linalg.norm(ip_to_mcp))
+    angle = np.degrees(np.arccos(np.clip(cos_angle, -1.0, 1.0)))
+    return angle
+
 def extract_thumb_features(landmarks: np.ndarray) -> np.ndarray:
     """Extract thumb-specific features."""
     # Thumb angles
     thumb_angles = [
-        compute_angle(landmarks[4], landmarks[3], landmarks[2]),  # TIP-DIP-PIP
+        compute_thumb_bend_angle(landmarks),  # Bend angle at IP joint
         compute_angle(landmarks[3], landmarks[2], landmarks[1]),  # DIP-PIP-MCP
         compute_angle(landmarks[2], landmarks[1], landmarks[0])   # PIP-MCP-WRIST
     ]
