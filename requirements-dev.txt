@@ -5,6 +5,14 @@ opencv-python==4.11.0.86
 
 # Development dependencies
 pytest==8.0.0
+pytest-cov==4.1.0
+pytest-asyncio==0.23.5
 black==24.1.1
 flake8==7.0.0
-mypy==1.8.0 
+mypy==1.8.0
+isort==5.13.2
+httpx==0.26.0
+python-multipart==0.0.9
+
+# Additional dependencies
+# ... existing code ... 
