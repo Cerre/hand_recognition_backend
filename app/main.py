@@ -45,8 +45,8 @@ app.add_middleware(
 detector = HandDetector(
     static_image_mode=False,  # Keep tracking mode
     max_num_hands=2,
-    min_detection_confidence=0.5,  # Lower from 0.7 to be more lenient
-    min_tracking_confidence=0.5    # Lower from 0.7 to maintain consistency
+    min_detection_confidence=0.7,  # Restore to original value
+    min_tracking_confidence=0.7    # Restore to original value
 )
 
 # Security setup
@@ -153,6 +153,53 @@ def log_frame_debug(client_id: str, stage: str, details: Dict[str, Any]):
     """Helper function to log frame processing details"""
     logger.warning(f"Client {client_id} - {stage}: {json.dumps(details, default=str)}")
 
+def normalize_brightness(image: np.ndarray, target_brightness: float = 127.0, max_adjustment: float = 0.7) -> np.ndarray:
+    """Normalize image brightness while preserving detail and preventing over-adjustment.
+    
+    Args:
+        image: Input BGR image
+        target_brightness: Target mean brightness (default: 127.0 - middle of 0-255 range)
+        max_adjustment: Maximum allowed adjustment factor to prevent extreme changes
+    
+    Returns:
+        Normalized image
+    """
+    current_brightness = np.mean(image)
+    
+    # Calculate adjustment needed
+    adjustment = target_brightness / current_brightness if current_brightness > 0 else 1.0
+    
+    # Limit adjustment range
+    adjustment = max(1.0 - max_adjustment, min(1.0 + max_adjustment, adjustment))
+    
+    # Apply adjustment while preserving detail
+    normalized = cv2.convertScaleAbs(image, alpha=adjustment, beta=0)
+    return normalized
+
+def enhance_image_quality(image: np.ndarray) -> np.ndarray:
+    """Enhance image quality for better hand detection.
+    
+    Args:
+        image: Input BGR image
+    
+    Returns:
+        Enhanced image
+    """
+    # First normalize brightness
+    image = normalize_brightness(image)
+    
+    # Apply adaptive histogram equalization to improve contrast while preserving local details
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    l = clahe.apply(l)
+    
+    enhanced = cv2.merge([l, a, b])
+    enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
+    
+    return enhanced
+
 def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, Any]:
     """Process a single frame and detect hands"""
     start_time = time()
@@ -240,17 +287,26 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
             frame_metrics['tracking_stats']['no_hands'] += 1
             return {"hands": [], "status": "invalid_image"}
 
-        # Log frame dimensions and basic image statistics
-        mean_brightness = np.mean(frame)
-        std_brightness = np.std(frame)
+        # Log original frame dimensions and basic image statistics
+        original_brightness = np.mean(frame)
+        original_std = np.std(frame)
+        
+        # Enhance image quality
+        frame = enhance_image_quality(frame)
+        
+        # Log enhanced frame statistics
+        enhanced_brightness = np.mean(frame)
+        enhanced_std = np.std(frame)
+        
         log_frame_debug(client_id, "Frame Analysis", {
             "width": frame.shape[1],
             "height": frame.shape[0],
             "channels": frame.shape[2] if len(frame.shape) > 2 else 1,
-            "mean_brightness": float(mean_brightness),
-            "brightness_std": float(std_brightness),
-            "is_dark": mean_brightness < 50,
-            "is_bright": mean_brightness > 200
+            "original_brightness": float(original_brightness),
+            "original_std": float(original_std),
+            "enhanced_brightness": float(enhanced_brightness),
+            "enhanced_std": float(enhanced_std),
+            "brightness_adjustment": float(enhanced_brightness - original_brightness)
         })
 
         # Convert to RGB for MediaPipe
