@@ -18,9 +18,9 @@ import asyncio
 from hand_recognition import HandDetector
 from tools.xgboost_predictor import xgboost_method
 
-# Set up logging - Change to WARNING to reduce overhead
+# Set up logging - Change to ERROR to only show critical issues
 logging.basicConfig(
-    level=logging.WARNING,  # Changed from INFO to WARNING
+    level=logging.ERROR,  # Changed from WARNING to ERROR - will only show critical issues
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # Get API key from environment
 API_TOKEN = os.getenv('API_KEY')
 if not API_TOKEN:
-    logger.warning("No API_TOKEN environment variable set")
+    logger.error("No API_TOKEN environment variable set")  # Changed to error since it's critical
 
 # Initialize FastAPI and middlewares
 app = FastAPI()
@@ -150,8 +150,8 @@ def update_metrics(processing_time: float, hands_count: int):
         frame_metrics['tracking_stats']['no_hands'] += 1
 
 def log_frame_debug(client_id: str, stage: str, details: Dict[str, Any]):
-    """Helper function to log frame processing details"""
-    logger.warning(f"Client {client_id} - {stage}: {json.dumps(details, default=str)}")
+    """Helper function to log frame processing details - only logs at DEBUG level"""
+    logger.debug(f"Client {client_id} - {stage}: {json.dumps(details, default=str)}")  # Changed to debug level
 
 def normalize_brightness(image: np.ndarray, target_brightness: float = 127.0, max_adjustment: float = 0.7) -> np.ndarray:
     """Normalize image brightness while preserving detail and preventing over-adjustment.
@@ -397,7 +397,7 @@ async def startup_event():
 
 @app.get("/")
 async def root():
-    logger.info("Health check endpoint accessed")
+    logger.debug("Health check endpoint accessed")  # Changed to debug
     return {"message": "Hand recognition backend is running"}
 
 def is_rate_limited(ip: str, current_time: float) -> bool:
@@ -435,8 +435,8 @@ async def websocket_endpoint(websocket: WebSocket):
     client_id = id(websocket)
     client_ip = websocket.client.host
     
-    # Log client connection details
-    logger.warning(f"New connection - Client ID: {client_id}, IP: {client_ip}, Headers: {websocket.headers}")
+    # Log client connection details at debug level
+    logger.debug(f"New connection - Client ID: {client_id}, IP: {client_ip}, Headers: {websocket.headers}")
     
     try:
         await websocket.accept()
@@ -453,7 +453,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json(update)
                     
             except WebSocketDisconnect:
-                logger.warning(f"Client {client_id} disconnected after {frame_count} frames")
+                logger.debug(f"Client {client_id} disconnected after {frame_count} frames")
                 break
             except Exception as e:
                 logger.error(f"Error processing frame for client {client_id}: {str(e)}")
