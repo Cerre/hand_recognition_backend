@@ -1,12 +1,18 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Security
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 import cv2
 import numpy as np
 import base64
 import logging
 from typing import Dict, List, Any
 import os
+import json
 from time import time
+import hashlib
+import hmac
+from collections import defaultdict
+import asyncio
 
 # Import hand_recognition package
 from hand_recognition import HandDetector
@@ -19,7 +25,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI and middleware
+# Get API key from environment
+API_KEY = os.getenv('API_KEY')
+if not API_KEY:
+    logger.warning("No API_KEY environment variable set")
+
+# Initialize FastAPI and middlewares
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -37,6 +48,26 @@ detector = HandDetector(
     min_detection_confidence=0.7,
     min_tracking_confidence=0.7
 )
+
+# Security setup
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+# Rate limiting setup
+connection_attempts = defaultdict(list)  # IP -> list of timestamps
+MAX_ATTEMPTS = 5  # Maximum connection attempts
+RATE_LIMIT_WINDOW = 60  # Time window in seconds
+RATE_LIMIT_CLEANUP_INTERVAL = 300  # Cleanup old entries every 5 minutes
+last_cleanup = time()
+
+def create_connection_token(timestamp: str) -> str:
+    """Create a secure connection token using HMAC"""
+    if not API_KEY:
+        return ""
+    return hmac.new(
+        API_KEY.encode(),
+        timestamp.encode(),
+        hashlib.sha256
+    ).hexdigest()
 
 def count_fingers(landmarks: np.ndarray) -> int:
     """Count number of extended fingers using XGBoost method."""
@@ -143,23 +174,113 @@ async def root():
     logger.info("Health check endpoint accessed")
     return {"message": "Hand recognition backend is running"}
 
+def is_rate_limited(ip: str, current_time: float) -> bool:
+    """Check if an IP has exceeded rate limits"""
+    global last_cleanup
+    
+    # Cleanup old entries periodically
+    if current_time - last_cleanup > RATE_LIMIT_CLEANUP_INTERVAL:
+        for ip_addr in list(connection_attempts.keys()):
+            # Remove attempts older than the window
+            connection_attempts[ip_addr] = [
+                t for t in connection_attempts[ip_addr]
+                if current_time - t < RATE_LIMIT_WINDOW
+            ]
+            # Remove empty entries
+            if not connection_attempts[ip_addr]:
+                del connection_attempts[ip_addr]
+        last_cleanup = current_time
+    
+    # Get attempts within the time window
+    recent_attempts = [
+        t for t in connection_attempts[ip]
+        if current_time - t < RATE_LIMIT_WINDOW
+    ]
+    
+    # Update attempts list
+    connection_attempts[ip] = recent_attempts
+    connection_attempts[ip].append(current_time)
+    
+    # Check if too many attempts
+    return len(recent_attempts) >= MAX_ATTEMPTS
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     client_id = id(websocket)
-    logger.info(f"New client {client_id} connected from {websocket.client.host}")
+    client_ip = websocket.client.host
+    current_time = time()
     
-    state_tracker = GestureStateTracker()
-    frame_count = 0
-    last_frame_time = time()
-    connection_start_time = time()
+    # Check rate limit before accepting connection
+    if is_rate_limited(client_ip, current_time):
+        logger.warning(f"Rate limit exceeded for IP {client_ip}")
+        return
+        
+    logger.info(f"New client {client_id} attempting to connect from {client_ip}")
     
     try:
+        # Accept the connection first
         await websocket.accept()
-        await websocket.send_json({
-            "status": "connected",
-            "message": "Waiting for camera initialization"
-        })
+        logger.info(f"Connection accepted for client {client_id}, waiting for authentication")
         
+        # Set a timeout for authentication
+        auth_timeout = 5  # seconds
+        auth_start = time()
+        
+        # Wait for authentication message
+        try:
+            while True:
+                if time() - auth_start > auth_timeout:
+                    logger.warning(f"Authentication timeout for client {client_id}")
+                    await websocket.close(1008, "Authentication timeout")
+                    return
+                    
+                try:
+                    # Try to receive the authentication message
+                    auth_message = await websocket.receive_json()
+                    break
+                except Exception:
+                    # If we get any error, wait a bit and try again if within timeout
+                    await asyncio.sleep(0.1)
+                    continue
+            
+            # Validate message format
+            if not isinstance(auth_message, dict) or 'key' not in auth_message:
+                logger.warning(f"Client {client_id} sent invalid auth format")
+                await websocket.close(1008, "Invalid authentication format")
+                return
+                
+            # Validate API key
+            client_key = auth_message['key']
+            if not API_KEY:
+                logger.error("Server API_KEY not configured")
+                await websocket.close(1011, "Server configuration error")
+                return
+                
+            if client_key != API_KEY:
+                logger.warning(f"Client {client_id} failed authentication")
+                await websocket.close(1008, "Invalid authentication")
+                return
+                
+            logger.info(f"Client {client_id} authenticated successfully")
+            
+            # Send success message
+            await websocket.send_json({
+                "status": "connected",
+                "message": "Authentication successful"
+            })
+            
+        except Exception as e:
+            logger.warning(f"Client {client_id} authentication error: {str(e)}")
+            await websocket.close(1008, "Authentication error")
+            return
+    
+        # Initialize video processing
+        state_tracker = GestureStateTracker()
+        frame_count = 0
+        last_frame_time = time()
+        connection_start_time = time()
+        
+        # Main processing loop
         while True:
             try:
                 # Process frame
