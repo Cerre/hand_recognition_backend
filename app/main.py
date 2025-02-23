@@ -26,9 +26,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Get API key from environment
-API_KEY = os.getenv('API_KEY')
-if not API_KEY:
-    logger.warning("No API_KEY environment variable set")
+API_TOKEN = os.getenv('API_KEY')
+if not API_TOKEN:
+    logger.warning("No API_TOKEN environment variable set")
 
 # Initialize FastAPI and middlewares
 app = FastAPI()
@@ -50,7 +50,7 @@ detector = HandDetector(
 )
 
 # Security setup
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+api_token_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 # Rate limiting setup
 connection_attempts = defaultdict(list)  # IP -> list of timestamps
@@ -61,10 +61,10 @@ last_cleanup = time()
 
 def create_connection_token(timestamp: str) -> str:
     """Create a secure connection token using HMAC"""
-    if not API_KEY:
+    if not API_TOKEN:
         return ""
     return hmac.new(
-        API_KEY.encode(),
+        API_TOKEN.encode(),
         timestamp.encode(),
         hashlib.sha256
     ).hexdigest()
@@ -244,19 +244,19 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
             
             # Validate message format
-            if not isinstance(auth_message, dict) or 'key' not in auth_message:
+            if not isinstance(auth_message, dict) or 'type' not in auth_message or auth_message['type'] != 'auth' or 'token' not in auth_message:
                 logger.warning(f"Client {client_id} sent invalid auth format")
                 await websocket.close(1008, "Invalid authentication format")
                 return
                 
-            # Validate API key
-            client_key = auth_message['key']
-            if not API_KEY:
-                logger.error("Server API_KEY not configured")
+            # Validate API token
+            client_token = auth_message['token']
+            if not API_TOKEN:
+                logger.error("Server API_TOKEN not configured")
                 await websocket.close(1011, "Server configuration error")
                 return
                 
-            if client_key != API_KEY:
+            if client_token != API_TOKEN:
                 logger.warning(f"Client {client_id} failed authentication")
                 await websocket.close(1008, "Invalid authentication")
                 return
@@ -265,6 +265,7 @@ async def websocket_endpoint(websocket: WebSocket):
             
             # Send success message
             await websocket.send_json({
+                "type": "auth",
                 "status": "connected",
                 "message": "Authentication successful"
             })
