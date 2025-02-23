@@ -149,7 +149,11 @@ def update_metrics(processing_time: float, hands_count: int):
     else:
         frame_metrics['tracking_stats']['no_hands'] += 1
 
-def process_frame(base64_frame: str) -> Dict[str, Any]:
+def log_frame_debug(client_id: str, stage: str, details: Dict[str, Any]):
+    """Helper function to log frame processing details"""
+    logger.warning(f"Client {client_id} - {stage}: {json.dumps(details)}")
+
+def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, Any]:
     """Process a single frame and detect hands"""
     start_time = time()
     frame_metrics['processed_count'] += 1
@@ -157,16 +161,27 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
     try:
         # Handle empty frames during initialization more gracefully
         if not base64_frame:
+            log_frame_debug(client_id, "Empty Frame", {"type": "empty"})
             frame_metrics['detection_fail_count'] += 1
             frame_metrics['tracking_stats']['no_hands'] += 1
             return {"hands": [], "status": "waiting_for_camera"}
+            
         if base64_frame == "data:,":
+            log_frame_debug(client_id, "Initializing Frame", {"type": "data:,"})
             frame_metrics['detection_fail_count'] += 1
             frame_metrics['tracking_stats']['no_hands'] += 1
             return {"hands": [], "status": "camera_initializing"}
 
+        # Log frame format
+        frame_format = base64_frame.split(',')[0] if ',' in base64_frame else "invalid"
+        log_frame_debug(client_id, "Frame Format", {
+            "format": frame_format,
+            "length": len(base64_frame)
+        })
+
         # Quick validation of base64 data
         if ',' not in base64_frame:
+            log_frame_debug(client_id, "Invalid Frame", {"error": "no comma in base64"})
             frame_metrics['detection_fail_count'] += 1
             frame_metrics['tracking_stats']['no_hands'] += 1
             return {"hands": [], "status": "invalid_frame"}
@@ -175,10 +190,12 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
         try:
             img_data = base64.b64decode(base64_frame.split(',')[1])
             if not img_data:
+                log_frame_debug(client_id, "Empty Image Data", {"error": "empty after decode"})
                 frame_metrics['detection_fail_count'] += 1
                 frame_metrics['tracking_stats']['no_hands'] += 1
                 return {"hands": [], "status": "empty_frame"}
         except Exception as e:
+            log_frame_debug(client_id, "Base64 Decode Error", {"error": str(e)})
             logger.warning(f"Base64 decoding failed: {str(e)}")
             frame_metrics['detection_fail_count'] += 1
             frame_metrics['tracking_stats']['no_hands'] += 1
@@ -188,24 +205,48 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
         nparr = np.frombuffer(img_data, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if frame is None:
+            log_frame_debug(client_id, "Image Decode Error", {"error": "cv2.imdecode returned None"})
             frame_metrics['detection_fail_count'] += 1
             frame_metrics['tracking_stats']['no_hands'] += 1
             return {"hands": [], "status": "invalid_image"}
+
+        # Log frame dimensions
+        log_frame_debug(client_id, "Frame Dimensions", {
+            "width": frame.shape[1],
+            "height": frame.shape[0],
+            "channels": frame.shape[2] if len(frame.shape) > 2 else 1
+        })
 
         # Convert to RGB for MediaPipe
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
         # Use HandDetector to find hands
-        frame, hands_data = detector.find_hands(frame_rgb)
+        try:
+            frame, hands_data = detector.find_hands(frame_rgb)
+            log_frame_debug(client_id, "Hand Detection", {
+                "hands_found": len(hands_data),
+                "detection_time_ms": (time() - start_time) * 1000
+            })
+        except Exception as e:
+            log_frame_debug(client_id, "Hand Detection Error", {"error": str(e)})
+            frame_metrics['detection_fail_count'] += 1
+            frame_metrics['tracking_stats']['no_hands'] += 1
+            return {"hands": [], "status": "detection_error"}
         
         # Process each hand with XGBoost method
         processed_hands = []
         for hand_data in hands_data:
-            finger_count = count_fingers(hand_data['landmarks'])
-            processed_hands.append({
-                'handedness': hand_data['handedness'],
-                'finger_count': finger_count
-            })
+            try:
+                finger_count = count_fingers(hand_data['landmarks'])
+                processed_hands.append({
+                    'handedness': hand_data['handedness'],
+                    'finger_count': finger_count
+                })
+            except Exception as e:
+                log_frame_debug(client_id, "Finger Count Error", {
+                    "error": str(e),
+                    "handedness": hand_data.get('handedness', 'unknown')
+                })
 
         # Update success metrics
         frame_metrics['detection_success_count'] += 1
@@ -215,6 +256,13 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
         # Update metrics
         update_metrics(processing_time, len(processed_hands))
 
+        # Log final results
+        log_frame_debug(client_id, "Processing Complete", {
+            "hands_processed": len(processed_hands),
+            "total_time_ms": processing_time,
+            "status": "ok"
+        })
+
         return {
             "hands": processed_hands, 
             "status": "ok",
@@ -222,6 +270,7 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
         }
 
     except Exception as e:
+        log_frame_debug(client_id, "Unexpected Error", {"error": str(e)})
         logger.error(f"Error in process_frame: {str(e)}")
         frame_metrics['detection_fail_count'] += 1
         frame_metrics['tracking_stats']['no_hands'] += 1
@@ -271,118 +320,29 @@ def is_rate_limited(ip: str, current_time: float) -> bool:
 async def websocket_endpoint(websocket: WebSocket):
     client_id = id(websocket)
     client_ip = websocket.client.host
-    current_time = time()
-    frame_count = 0  # Initialize at the start
     
-    # Check rate limit before accepting connection
-    if is_rate_limited(client_ip, current_time):
-        logger.warning(f"Rate limit exceeded for IP {client_ip}")
-        return
-        
-    logger.info(f"New client {client_id} attempting to connect from {client_ip}")
+    # Log client connection details
+    logger.warning(f"New connection - Client ID: {client_id}, IP: {client_ip}, Headers: {websocket.headers}")
     
     try:
-        # Accept the connection first
         await websocket.accept()
-        logger.info(f"Connection accepted for client {client_id}, waiting for authentication")
-        
-        # Set a timeout for authentication
-        auth_timeout = 5  # seconds
-        auth_start = time()
-        
-        # Wait for authentication message
-        try:
-            while True:
-                if time() - auth_start > auth_timeout:
-                    logger.warning(f"Authentication timeout for client {client_id}")
-                    await websocket.close(1008, "Authentication timeout")
-                    return
-                    
-                try:
-                    # Try to receive the authentication message
-                    auth_message = await websocket.receive_json()
-                    break
-                except Exception:
-                    # If we get any error, wait a bit and try again if within timeout
-                    await asyncio.sleep(0.1)
-                    continue
-            
-            # Validate message format - accept both 'key' and 'token' for backward compatibility
-            if not isinstance(auth_message, dict) or ('key' not in auth_message and 'token' not in auth_message):
-                logger.warning(f"Client {client_id} sent invalid auth format")
-                await websocket.close(1008, "Invalid authentication format")
-                return
-                
-            # Get token from either 'key' or 'token' field
-            client_token = auth_message.get('token') or auth_message.get('key')
-            
-            if not API_TOKEN:
-                logger.error("Server API_TOKEN not configured")
-                await websocket.close(1011, "Server configuration error")
-                return
-                
-            if client_token != API_TOKEN:
-                logger.warning(f"Client {client_id} failed authentication")
-                await websocket.close(1008, "Invalid authentication")
-                return
-                
-            logger.info(f"Client {client_id} authenticated successfully")
-            
-            # Send success message
-            await websocket.send_json({
-                "type": "auth",
-                "status": "connected",
-                "message": "Authentication successful"
-            })
-            
-        except Exception as e:
-            logger.warning(f"Client {client_id} authentication error: {str(e)}")
-            await websocket.close(1008, "Authentication error")
-            return
-    
-        # Initialize video processing
         state_tracker = GestureStateTracker()
-        last_frame_time = time()
-        connection_start_time = time()
+        frame_count = 0
         
-        # Main processing loop
         while True:
             try:
-                # Process frame
                 data = await websocket.receive_text()
-                current_time = time()
-                
-                # Only log if there's a significant delay
-                if current_time - last_frame_time > 5:
-                    logger.warning(f"Long delay between frames: {current_time - last_frame_time:.2f}s")
-                
-                last_frame_time = current_time
-                frame_count += 1
-                
-                # Process frame
-                frame_data = process_frame(data)
-                
-                # During first few seconds, send more detailed status updates
-                if current_time - connection_start_time < 5:
-                    if frame_data["status"] != "ok":
-                        await websocket.send_json({
-                            "type": "status_update",
-                            "status": frame_data["status"]
-                        })
-                        continue
-                
-                # Process hands data and get update
+                frame_data = process_frame(data, str(client_id))
                 update = state_tracker.add_frame_data(frame_data["hands"])
                 
-                # Only send update if we have new data
                 if update is not None:
                     await websocket.send_json(update)
-                
+                    
             except WebSocketDisconnect:
-                logger.info(f"Client {client_id} disconnected after {frame_count} frames")
+                logger.warning(f"Client {client_id} disconnected after {frame_count} frames")
                 break
             except Exception as e:
-                logger.error(f"Error processing frame: {str(e)}")
+                logger.error(f"Error processing frame for client {client_id}: {str(e)}")
                 try:
                     await websocket.send_json({
                         "type": "error",
@@ -392,6 +352,4 @@ async def websocket_endpoint(websocket: WebSocket):
                 except:
                     break
     except Exception as e:
-        logger.error(f"WebSocket error: {str(e)}")
-    finally:
-        logger.info(f"Connection closed. Frames processed: {frame_count}")
+        logger.error(f"WebSocket error for client {client_id}: {str(e)}")
