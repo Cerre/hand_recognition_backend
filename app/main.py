@@ -43,10 +43,10 @@ app.add_middleware(
 
 # Initialize hand detection components
 detector = HandDetector(
-    static_image_mode=False,  # Changed back to False to use tracking mode
+    static_image_mode=False,  # Keep tracking mode
     max_num_hands=2,
-    min_detection_confidence=0.7,
-    min_tracking_confidence=0.7  # Changed back to 0.7 for better tracking stability
+    min_detection_confidence=0.5,  # Lower from 0.7 to be more lenient
+    min_tracking_confidence=0.5    # Lower from 0.7 to maintain consistency
 )
 
 # Security setup
