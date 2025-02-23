@@ -134,34 +134,20 @@ class GestureStateTracker:
             "timestamp": current_time
         }
 
-def log_performance_metrics():
-    if frame_metrics['processed_count'] > 0:
-        avg_processing = sum(frame_metrics['processing_times']) / len(frame_metrics['processing_times'])
-        tracking_stats = frame_metrics['tracking_stats']
-        total_frames = frame_metrics['processed_count']
-        
-        logger.warning(
-            "Performance Metrics: "
-            f"Processed={total_frames}, "
-            f"Avg Processing Time={avg_processing:.2f}ms, "
-            f"Success Rate={100 * frame_metrics['detection_success_count'] / total_frames:.1f}%, "
-            f"Failed Detections={frame_metrics['detection_fail_count']}, "
-            f"Both Hands={100 * tracking_stats['both_hands'] / total_frames:.1f}%, "
-            f"Single Hand={100 * tracking_stats['single_hand'] / total_frames:.1f}%, "
-            f"No Hands={100 * tracking_stats['no_hands'] / total_frames:.1f}%"
-        )
-        # Reset metrics after logging
+# Remove the logging functions
+def update_metrics(processing_time: float, hands_count: int):
+    """Update metrics without logging"""
+    frame_metrics['processing_times'].append(processing_time)
+    if len(frame_metrics['processing_times']) > 100:
         frame_metrics['processing_times'] = frame_metrics['processing_times'][-100:]
-
-# Log metrics every 5 seconds
-async def log_metrics_periodically():
-    while True:
-        await asyncio.sleep(5)
-        log_performance_metrics()
-
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(log_metrics_periodically())
+    
+    # Update tracking stats
+    if hands_count == 2:
+        frame_metrics['tracking_stats']['both_hands'] += 1
+    elif hands_count == 1:
+        frame_metrics['tracking_stats']['single_hand'] += 1
+    else:
+        frame_metrics['tracking_stats']['no_hands'] += 1
 
 def process_frame(base64_frame: str) -> Dict[str, Any]:
     """Process a single frame and detect hands"""
@@ -221,19 +207,13 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
                 'finger_count': finger_count
             })
 
-        # Update tracking stats
-        if len(processed_hands) == 2:
-            frame_metrics['tracking_stats']['both_hands'] += 1
-        elif len(processed_hands) == 1:
-            frame_metrics['tracking_stats']['single_hand'] += 1
-        else:
-            frame_metrics['tracking_stats']['no_hands'] += 1
-
         # Update success metrics
         frame_metrics['detection_success_count'] += 1
         processing_time = (time() - start_time) * 1000  # Convert to ms
-        frame_metrics['processing_times'].append(processing_time)
         frame_metrics['last_processed_time'] = time()
+        
+        # Update metrics
+        update_metrics(processing_time, len(processed_hands))
 
         return {
             "hands": processed_hands, 
@@ -246,6 +226,11 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
         frame_metrics['detection_fail_count'] += 1
         frame_metrics['tracking_stats']['no_hands'] += 1
         return {"hands": [], "status": "error"}
+
+# Remove the periodic logging setup
+@app.on_event("startup")
+async def startup_event():
+    pass  # Remove the periodic logging task
 
 @app.get("/")
 async def root():
