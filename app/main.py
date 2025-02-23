@@ -43,10 +43,10 @@ app.add_middleware(
 
 # Initialize hand detection components
 detector = HandDetector(
-    static_image_mode=True,  # Changed to True as we don't need tracking between frames
+    static_image_mode=False,  # Changed back to False to use tracking mode
     max_num_hands=2,
     min_detection_confidence=0.7,
-    min_tracking_confidence=0.5  # Reduced as it's less relevant in static mode
+    min_tracking_confidence=0.7  # Changed back to 0.7 for better tracking stability
 )
 
 # Security setup
@@ -65,7 +65,12 @@ frame_metrics = {
     'processing_times': [],
     'last_processed_time': 0,
     'detection_success_count': 0,
-    'detection_fail_count': 0
+    'detection_fail_count': 0,
+    'tracking_stats': {
+        'both_hands': 0,
+        'single_hand': 0,
+        'no_hands': 0
+    }
 }
 
 def create_connection_token(timestamp: str) -> str:
@@ -132,12 +137,18 @@ class GestureStateTracker:
 def log_performance_metrics():
     if frame_metrics['processed_count'] > 0:
         avg_processing = sum(frame_metrics['processing_times']) / len(frame_metrics['processing_times'])
+        tracking_stats = frame_metrics['tracking_stats']
+        total_frames = frame_metrics['processed_count']
+        
         logger.warning(
             "Performance Metrics: "
-            f"Processed={frame_metrics['processed_count']}, "
+            f"Processed={total_frames}, "
             f"Avg Processing Time={avg_processing:.2f}ms, "
-            f"Success Rate={100 * frame_metrics['detection_success_count'] / frame_metrics['processed_count']:.1f}%, "
-            f"Failed Detections={frame_metrics['detection_fail_count']}"
+            f"Success Rate={100 * frame_metrics['detection_success_count'] / total_frames:.1f}%, "
+            f"Failed Detections={frame_metrics['detection_fail_count']}, "
+            f"Both Hands={100 * tracking_stats['both_hands'] / total_frames:.1f}%, "
+            f"Single Hand={100 * tracking_stats['single_hand'] / total_frames:.1f}%, "
+            f"No Hands={100 * tracking_stats['no_hands'] / total_frames:.1f}%"
         )
         # Reset metrics after logging
         frame_metrics['processing_times'] = frame_metrics['processing_times'][-100:]
@@ -161,14 +172,17 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
         # Handle empty frames during initialization more gracefully
         if not base64_frame:
             frame_metrics['detection_fail_count'] += 1
+            frame_metrics['tracking_stats']['no_hands'] += 1
             return {"hands": [], "status": "waiting_for_camera"}
         if base64_frame == "data:,":
             frame_metrics['detection_fail_count'] += 1
+            frame_metrics['tracking_stats']['no_hands'] += 1
             return {"hands": [], "status": "camera_initializing"}
 
         # Quick validation of base64 data
         if ',' not in base64_frame:
             frame_metrics['detection_fail_count'] += 1
+            frame_metrics['tracking_stats']['no_hands'] += 1
             return {"hands": [], "status": "invalid_frame"}
 
         # Decode base64 image
@@ -176,10 +190,12 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
             img_data = base64.b64decode(base64_frame.split(',')[1])
             if not img_data:
                 frame_metrics['detection_fail_count'] += 1
+                frame_metrics['tracking_stats']['no_hands'] += 1
                 return {"hands": [], "status": "empty_frame"}
         except Exception as e:
             logger.warning(f"Base64 decoding failed: {str(e)}")
             frame_metrics['detection_fail_count'] += 1
+            frame_metrics['tracking_stats']['no_hands'] += 1
             return {"hands": [], "status": "decode_error"}
 
         # Convert to numpy array and decode image
@@ -187,6 +203,7 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if frame is None:
             frame_metrics['detection_fail_count'] += 1
+            frame_metrics['tracking_stats']['no_hands'] += 1
             return {"hands": [], "status": "invalid_image"}
 
         # Convert to RGB for MediaPipe
@@ -204,6 +221,14 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
                 'finger_count': finger_count
             })
 
+        # Update tracking stats
+        if len(processed_hands) == 2:
+            frame_metrics['tracking_stats']['both_hands'] += 1
+        elif len(processed_hands) == 1:
+            frame_metrics['tracking_stats']['single_hand'] += 1
+        else:
+            frame_metrics['tracking_stats']['no_hands'] += 1
+
         # Update success metrics
         frame_metrics['detection_success_count'] += 1
         processing_time = (time() - start_time) * 1000  # Convert to ms
@@ -219,6 +244,7 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error in process_frame: {str(e)}")
         frame_metrics['detection_fail_count'] += 1
+        frame_metrics['tracking_stats']['no_hands'] += 1
         return {"hands": [], "status": "error"}
 
 @app.get("/")
