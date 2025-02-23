@@ -102,7 +102,7 @@ def count_fingers(landmarks: np.ndarray) -> int:
 
 class GestureStateTracker:
     def __init__(self):
-        self.last_update_time = time()
+        self.last_update_time = 0  # Initialize to 0 so first update always goes through
         self.min_update_interval = 1.0 / 30  # Cap at 30 FPS to reduce load
 
     def add_frame_data(self, hands_data: List[Dict]) -> Dict:
@@ -440,17 +440,23 @@ async def websocket_endpoint(websocket: WebSocket):
     
     try:
         await websocket.accept()
+        await websocket.send_json({"status": "connected"})
         state_tracker = GestureStateTracker()
         frame_count = 0
         
         while True:
             try:
                 data = await websocket.receive_text()
-                frame_data = process_frame(data, str(client_id))
-                update = state_tracker.add_frame_data(frame_data["hands"])
+                frame_count += 1
                 
-                if update is not None:
-                    await websocket.send_json(update)
+                # Process frame and get updates
+                frame_data = process_frame(data, str(client_id))
+                score_update = state_tracker.add_frame_data(frame_data["hands"])
+                
+                # Send frame data first, then score update if available
+                await websocket.send_json(frame_data)
+                if score_update is not None:
+                    await websocket.send_json(score_update)
                     
             except WebSocketDisconnect:
                 logger.debug(f"Client {client_id} disconnected after {frame_count} frames")
