@@ -209,6 +209,7 @@ async def websocket_endpoint(websocket: WebSocket):
     client_id = id(websocket)
     client_ip = websocket.client.host
     current_time = time()
+    frame_count = 0  # Initialize at the start
     
     # Check rate limit before accepting connection
     if is_rate_limited(client_ip, current_time):
@@ -243,14 +244,15 @@ async def websocket_endpoint(websocket: WebSocket):
                     await asyncio.sleep(0.1)
                     continue
             
-            # Validate message format
-            if not isinstance(auth_message, dict) or 'type' not in auth_message or auth_message['type'] != 'auth' or 'token' not in auth_message:
+            # Validate message format - accept both 'key' and 'token' for backward compatibility
+            if not isinstance(auth_message, dict) or ('key' not in auth_message and 'token' not in auth_message):
                 logger.warning(f"Client {client_id} sent invalid auth format")
                 await websocket.close(1008, "Invalid authentication format")
                 return
                 
-            # Validate API token
-            client_token = auth_message['token']
+            # Get token from either 'key' or 'token' field
+            client_token = auth_message.get('token') or auth_message.get('key')
+            
             if not API_TOKEN:
                 logger.error("Server API_TOKEN not configured")
                 await websocket.close(1011, "Server configuration error")
@@ -277,7 +279,6 @@ async def websocket_endpoint(websocket: WebSocket):
     
         # Initialize video processing
         state_tracker = GestureStateTracker()
-        frame_count = 0
         last_frame_time = time()
         connection_start_time = time()
         
