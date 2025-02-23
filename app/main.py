@@ -43,10 +43,10 @@ app.add_middleware(
 
 # Initialize hand detection components
 detector = HandDetector(
-    static_image_mode=False,
+    static_image_mode=True,  # Changed to True as we don't need tracking between frames
     max_num_hands=2,
     min_detection_confidence=0.7,
-    min_tracking_confidence=0.7
+    min_tracking_confidence=0.5  # Reduced as it's less relevant in static mode
 )
 
 # Security setup
@@ -58,6 +58,15 @@ MAX_ATTEMPTS = 5  # Maximum connection attempts
 RATE_LIMIT_WINDOW = 60  # Time window in seconds
 RATE_LIMIT_CLEANUP_INTERVAL = 300  # Cleanup old entries every 5 minutes
 last_cleanup = time()
+
+# Performance monitoring
+frame_metrics = {
+    'processed_count': 0,
+    'processing_times': [],
+    'last_processed_time': 0,
+    'detection_success_count': 0,
+    'detection_fail_count': 0
+}
 
 def create_connection_token(timestamp: str) -> str:
     """Create a secure connection token using HMAC"""
@@ -120,32 +129,64 @@ class GestureStateTracker:
             "timestamp": current_time
         }
 
+def log_performance_metrics():
+    if frame_metrics['processed_count'] > 0:
+        avg_processing = sum(frame_metrics['processing_times']) / len(frame_metrics['processing_times'])
+        logger.warning(
+            "Performance Metrics: "
+            f"Processed={frame_metrics['processed_count']}, "
+            f"Avg Processing Time={avg_processing:.2f}ms, "
+            f"Success Rate={100 * frame_metrics['detection_success_count'] / frame_metrics['processed_count']:.1f}%, "
+            f"Failed Detections={frame_metrics['detection_fail_count']}"
+        )
+        # Reset metrics after logging
+        frame_metrics['processing_times'] = frame_metrics['processing_times'][-100:]
+
+# Log metrics every 5 seconds
+async def log_metrics_periodically():
+    while True:
+        await asyncio.sleep(5)
+        log_performance_metrics()
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(log_metrics_periodically())
+
 def process_frame(base64_frame: str) -> Dict[str, Any]:
     """Process a single frame and detect hands"""
+    start_time = time()
+    frame_metrics['processed_count'] += 1
+    
     try:
         # Handle empty frames during initialization more gracefully
         if not base64_frame:
+            frame_metrics['detection_fail_count'] += 1
             return {"hands": [], "status": "waiting_for_camera"}
         if base64_frame == "data:,":
+            frame_metrics['detection_fail_count'] += 1
             return {"hands": [], "status": "camera_initializing"}
 
         # Quick validation of base64 data
         if ',' not in base64_frame:
+            frame_metrics['detection_fail_count'] += 1
             return {"hands": [], "status": "invalid_frame"}
 
         # Decode base64 image
         try:
             img_data = base64.b64decode(base64_frame.split(',')[1])
             if not img_data:
+                frame_metrics['detection_fail_count'] += 1
                 return {"hands": [], "status": "empty_frame"}
         except Exception as e:
             logger.warning(f"Base64 decoding failed: {str(e)}")
+            frame_metrics['detection_fail_count'] += 1
             return {"hands": [], "status": "decode_error"}
 
         # Convert to numpy array and decode image
         nparr = np.frombuffer(img_data, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if frame is None:
+            frame_metrics['detection_fail_count'] += 1
             return {"hands": [], "status": "invalid_image"}
 
         # Convert to RGB for MediaPipe
@@ -163,10 +204,21 @@ def process_frame(base64_frame: str) -> Dict[str, Any]:
                 'finger_count': finger_count
             })
 
-        return {"hands": processed_hands, "status": "ok"}
+        # Update success metrics
+        frame_metrics['detection_success_count'] += 1
+        processing_time = (time() - start_time) * 1000  # Convert to ms
+        frame_metrics['processing_times'].append(processing_time)
+        frame_metrics['last_processed_time'] = time()
+
+        return {
+            "hands": processed_hands, 
+            "status": "ok",
+            "processing_time_ms": processing_time
+        }
 
     except Exception as e:
         logger.error(f"Error in process_frame: {str(e)}")
+        frame_metrics['detection_fail_count'] += 1
         return {"hands": [], "status": "error"}
 
 @app.get("/")
