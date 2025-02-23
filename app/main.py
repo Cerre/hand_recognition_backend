@@ -151,7 +151,7 @@ def update_metrics(processing_time: float, hands_count: int):
 
 def log_frame_debug(client_id: str, stage: str, details: Dict[str, Any]):
     """Helper function to log frame processing details"""
-    logger.warning(f"Client {client_id} - {stage}: {json.dumps(details)}")
+    logger.warning(f"Client {client_id} - {stage}: {json.dumps(details, default=str)}")
 
 def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, Any]:
     """Process a single frame and detect hands"""
@@ -159,6 +159,18 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
     frame_metrics['processed_count'] += 1
     
     try:
+        # Check if this is an auth message
+        try:
+            json_data = json.loads(base64_frame)
+            if isinstance(json_data, dict) and 'type' in json_data:
+                log_frame_debug(client_id, "Received JSON Message", {
+                    "message_type": json_data.get('type'),
+                    "length": len(base64_frame)
+                })
+                return {"hands": [], "status": "json_message"}
+        except json.JSONDecodeError:
+            pass  # Not a JSON message, continue with image processing
+
         # Handle empty frames during initialization more gracefully
         if not base64_frame:
             log_frame_debug(client_id, "Empty Frame", {"type": "empty"})
@@ -172,16 +184,21 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
             frame_metrics['tracking_stats']['no_hands'] += 1
             return {"hands": [], "status": "camera_initializing"}
 
-        # Log frame format
+        # Log frame format and size
         frame_format = base64_frame.split(',')[0] if ',' in base64_frame else "invalid"
+        frame_size = len(base64_frame)
         log_frame_debug(client_id, "Frame Format", {
             "format": frame_format,
-            "length": len(base64_frame)
+            "length": frame_size,
+            "is_valid_base64": frame_format.startswith("data:image")
         })
 
         # Quick validation of base64 data
         if ',' not in base64_frame:
-            log_frame_debug(client_id, "Invalid Frame", {"error": "no comma in base64"})
+            log_frame_debug(client_id, "Invalid Frame", {
+                "error": "no comma in base64",
+                "received_start": base64_frame[:50] + "..." if len(base64_frame) > 50 else base64_frame
+            })
             frame_metrics['detection_fail_count'] += 1
             frame_metrics['tracking_stats']['no_hands'] += 1
             return {"hands": [], "status": "invalid_frame"}
@@ -194,9 +211,17 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
                 frame_metrics['detection_fail_count'] += 1
                 frame_metrics['tracking_stats']['no_hands'] += 1
                 return {"hands": [], "status": "empty_frame"}
+            
+            log_frame_debug(client_id, "Image Data", {
+                "decoded_size": len(img_data),
+                "compression_ratio": len(img_data) / frame_size if frame_size > 0 else 0
+            })
+
         except Exception as e:
-            log_frame_debug(client_id, "Base64 Decode Error", {"error": str(e)})
-            logger.warning(f"Base64 decoding failed: {str(e)}")
+            log_frame_debug(client_id, "Base64 Decode Error", {
+                "error": str(e),
+                "frame_start": base64_frame[:50] + "..." if len(base64_frame) > 50 else base64_frame
+            })
             frame_metrics['detection_fail_count'] += 1
             frame_metrics['tracking_stats']['no_hands'] += 1
             return {"hands": [], "status": "decode_error"}
@@ -205,16 +230,27 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
         nparr = np.frombuffer(img_data, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if frame is None:
-            log_frame_debug(client_id, "Image Decode Error", {"error": "cv2.imdecode returned None"})
+            log_frame_debug(client_id, "Image Decode Error", {
+                "error": "cv2.imdecode returned None",
+                "array_size": len(nparr),
+                "array_min": int(nparr.min()),
+                "array_max": int(nparr.max())
+            })
             frame_metrics['detection_fail_count'] += 1
             frame_metrics['tracking_stats']['no_hands'] += 1
             return {"hands": [], "status": "invalid_image"}
 
-        # Log frame dimensions
-        log_frame_debug(client_id, "Frame Dimensions", {
+        # Log frame dimensions and basic image statistics
+        mean_brightness = np.mean(frame)
+        std_brightness = np.std(frame)
+        log_frame_debug(client_id, "Frame Analysis", {
             "width": frame.shape[1],
             "height": frame.shape[0],
-            "channels": frame.shape[2] if len(frame.shape) > 2 else 1
+            "channels": frame.shape[2] if len(frame.shape) > 2 else 1,
+            "mean_brightness": float(mean_brightness),
+            "brightness_std": float(std_brightness),
+            "is_dark": mean_brightness < 50,
+            "is_bright": mean_brightness > 200
         })
 
         # Convert to RGB for MediaPipe
@@ -223,12 +259,29 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
         # Use HandDetector to find hands
         try:
             frame, hands_data = detector.find_hands(frame_rgb)
-            log_frame_debug(client_id, "Hand Detection", {
+            detection_time = (time() - start_time) * 1000
+            
+            # Log detailed hand detection results
+            hand_details = []
+            for hand in hands_data:
+                hand_details.append({
+                    "handedness": hand.get('handedness', 'unknown'),
+                    "confidence": float(hand.get('confidence', 0)),
+                    "has_landmarks": 'landmarks' in hand,
+                    "landmark_count": len(hand['landmarks']) if 'landmarks' in hand else 0
+                })
+            
+            log_frame_debug(client_id, "Hand Detection Details", {
                 "hands_found": len(hands_data),
-                "detection_time_ms": (time() - start_time) * 1000
+                "detection_time_ms": detection_time,
+                "hand_details": hand_details
             })
+
         except Exception as e:
-            log_frame_debug(client_id, "Hand Detection Error", {"error": str(e)})
+            log_frame_debug(client_id, "Hand Detection Error", {
+                "error": str(e),
+                "traceback": str(e.__traceback__)
+            })
             frame_metrics['detection_fail_count'] += 1
             frame_metrics['tracking_stats']['no_hands'] += 1
             return {"hands": [], "status": "detection_error"}
@@ -240,12 +293,14 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
                 finger_count = count_fingers(hand_data['landmarks'])
                 processed_hands.append({
                     'handedness': hand_data['handedness'],
-                    'finger_count': finger_count
+                    'finger_count': finger_count,
+                    'confidence': float(hand_data.get('confidence', 0))
                 })
             except Exception as e:
                 log_frame_debug(client_id, "Finger Count Error", {
                     "error": str(e),
-                    "handedness": hand_data.get('handedness', 'unknown')
+                    "handedness": hand_data.get('handedness', 'unknown'),
+                    "has_landmarks": 'landmarks' in hand_data
                 })
 
         # Update success metrics
@@ -256,11 +311,12 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
         # Update metrics
         update_metrics(processing_time, len(processed_hands))
 
-        # Log final results
+        # Log final results with more details
         log_frame_debug(client_id, "Processing Complete", {
             "hands_processed": len(processed_hands),
             "total_time_ms": processing_time,
-            "status": "ok"
+            "status": "ok",
+            "processed_hands": processed_hands
         })
 
         return {
@@ -270,8 +326,10 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
         }
 
     except Exception as e:
-        log_frame_debug(client_id, "Unexpected Error", {"error": str(e)})
-        logger.error(f"Error in process_frame: {str(e)}")
+        log_frame_debug(client_id, "Unexpected Error", {
+            "error": str(e),
+            "traceback": str(e.__traceback__)
+        })
         frame_metrics['detection_fail_count'] += 1
         frame_metrics['tracking_stats']['no_hands'] += 1
         return {"hands": [], "status": "error"}
