@@ -24,5 +24,11 @@ COPY . .
 # Ensure models directory has correct permissions
 RUN chmod -R 777 models
 
+# Set default port if not provided
+ENV PORT=8000
+
+# Expose the port
+EXPOSE ${PORT}
+
 # Command to run the application
 CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT}

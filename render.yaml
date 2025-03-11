@@ -1,9 +1,9 @@
 services:
   - type: web
     name: hand-recognition-backend
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.9.0
+      # Add any environment variables your app needs
+      # - key: API_KEY
+      #   sync: false  # This means Render will prompt for this value
