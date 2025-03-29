@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Security
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Security, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 import cv2
@@ -13,6 +13,7 @@ import hashlib
 import hmac
 from collections import defaultdict
 import asyncio
+from fastapi import status
 
 # Import hand_recognition package
 from hand_recognition import HandDetector
@@ -51,6 +52,24 @@ detector = HandDetector(
 
 # Security setup
 api_token_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+# Dependency function to validate API Key
+async def get_api_key(api_key_header: str = Security(api_token_header)):
+    if not API_TOKEN:
+        logger.critical("API_TOKEN environment variable not set. Authentication disabled.")
+        # In a real scenario, you might want to deny all connections if the token isn't set
+        # raise HTTPException(status_code=503, detail="Server configuration error: API Token not set")
+        # For now, let's allow connection but log critical error
+        return None # Or some indicator that auth is effectively off
+
+    if api_key_header == API_TOKEN:
+        return api_key_header
+    else:
+        logger.warning(f"Authentication failed: Invalid API Key received.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API Key",
+        )
 
 # Rate limiting setup
 connection_attempts = defaultdict(list)  # IP -> list of timestamps
@@ -431,12 +450,12 @@ def is_rate_limited(ip: str, current_time: float) -> bool:
     return len(recent_attempts) >= MAX_ATTEMPTS
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket, api_key: str = Security(get_api_key)):
     client_id = id(websocket)
     client_ip = websocket.client.host
     
-    # Log client connection details at debug level
-    logger.debug(f"New connection - Client ID: {client_id}, IP: {client_ip}, Headers: {websocket.headers}")
+    # Log client connection details at debug level - Now includes successful auth implicitly
+    logger.info(f"Authenticated connection - Client ID: {client_id}, IP: {client_ip}")
     
     try:
         await websocket.accept()
@@ -446,6 +465,9 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             try:
                 data = await websocket.receive_text()
+                # Log the received data (first 100 chars for brevity)
+                logger.info(f"Client {client_id} received data (first 100 chars): {data[:100]}...")
+
                 frame_data = process_frame(data, str(client_id))
                 update = state_tracker.add_frame_data(frame_data["hands"])
                 
@@ -456,7 +478,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 logger.debug(f"Client {client_id} disconnected after {frame_count} frames")
                 break
             except Exception as e:
-                logger.error(f"Error processing frame for client {client_id}: {str(e)}")
+                # Log the full exception traceback
+                logger.exception(f"Detailed error processing frame for client {client_id}:")
+                # Keep the original simple error log as well, if desired
+                # logger.error(f"Error processing frame for client {client_id}: {str(e)}")
                 try:
                     await websocket.send_json({
                         "type": "error",
@@ -466,4 +491,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 except:
                     break
     except Exception as e:
-        logger.error(f"WebSocket error for client {client_id}: {str(e)}")
+        logger.error(f"Failed to establish WebSocket connection for client {client_id} from {client_ip}: {str(e)}")
+        # Connection might already be closed by FastAPI due to auth HTTPException
+        # No explicit close needed here unless accept() itself failed differently.
