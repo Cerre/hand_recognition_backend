@@ -21,7 +21,7 @@ from tools.xgboost_predictor import xgboost_method
 
 # Set up logging - Change to ERROR to only show critical issues
 logging.basicConfig(
-    level=logging.ERROR,  # Changed from WARNING to ERROR - will only show critical issues
+    level=logging.INFO,  # Changed from ERROR to INFO to capture more detailed logs
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
