@@ -21,11 +21,12 @@ from tools.xgboost_predictor import xgboost_method
 
 # Set up logging - Change to ERROR to only show critical issues
 logging.basicConfig(
-    level=logging.INFO,  # Changed from ERROR to INFO to capture more detailed logs
+    level=logging.DEBUG,  # Changed from INFO to DEBUG for maximum detail
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
+from dotenv import load_dotenv
+load_dotenv()
 # Get API key from environment
 API_TOKEN = os.getenv('API_KEY')
 if not API_TOKEN:
@@ -493,16 +494,21 @@ async def websocket_endpoint(websocket: WebSocket, api_key: str = Depends(get_ap
         
         while True:
             try:
-                data = await websocket.receive_text()
-                # Log the received data (first 100 chars for brevity)
-                logger.info(f"Client {client_id} received data (first 100 chars): {data[:100]}...")
+                # Change to receive bytes instead of text
+                data_bytes = await websocket.receive_bytes()
+                # Encode the received bytes as base64
+                data_base64 = base64.b64encode(data_bytes).decode('utf-8')
 
-                frame_data = process_frame(data, str(client_id))
+                # Log the received data type and size (optional)
+                logger.info(f"Client {client_id} received {len(data_bytes)} bytes.")
+
+                # Pass the base64 encoded string to process_frame
+                frame_data = process_frame(data_base64, str(client_id))
                 update = state_tracker.add_frame_data(frame_data["hands"])
-                
+
                 if update is not None:
                     await websocket.send_json(update)
-                    
+
             except WebSocketDisconnect:
                 logger.debug(f"Client {client_id} disconnected after {frame_count} frames")
                 break
