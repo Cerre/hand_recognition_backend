@@ -55,14 +55,25 @@ api_token_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 # Dependency function to validate API Key
 async def get_api_key(api_key_header: str = Security(api_token_header)):
+    # 1. Check if the server has the API_TOKEN configured
     if not API_TOKEN:
-        logger.critical("API_TOKEN environment variable not set. Authentication disabled.")
-        # In a real scenario, you might want to deny all connections if the token isn't set
-        # raise HTTPException(status_code=503, detail="Server configuration error: API Token not set")
-        # For now, let's allow connection but log critical error
-        return None # Or some indicator that auth is effectively off
+        logger.critical("CRITICAL SERVER ERROR: API_TOKEN environment variable not set.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Server configuration error: Authentication unavailable."
+        )
 
-    if api_key_header == API_TOKEN:
+    # 2. Check if the client provided the API key header
+    if api_key_header is None:
+        logger.warning(f"Authentication failed: Missing X-API-Key header.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API Key required",
+        )
+
+    # 3. Compare the provided key with the server's key
+    if hmac.compare_digest(api_key_header, API_TOKEN):
+        # Use compare_digest for security against timing attacks
         return api_key_header
     else:
         logger.warning(f"Authentication failed: Invalid API Key received.")
