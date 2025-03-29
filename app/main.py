@@ -51,10 +51,12 @@ detector = HandDetector(
 )
 
 # Security setup
-api_token_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+# Remove the APIKeyHeader instance as it's not directly used in the dependency anymore
+# api_token_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 # Dependency function to validate API Key
-async def get_api_key(api_key_header: str = Security(api_token_header)):
+# Change signature to accept WebSocket object
+async def get_api_key(websocket: WebSocket):
     # 1. Check if the server has the API_TOKEN configured
     if not API_TOKEN:
         logger.critical("CRITICAL SERVER ERROR: API_TOKEN environment variable not set.")
@@ -63,22 +65,26 @@ async def get_api_key(api_key_header: str = Security(api_token_header)):
             detail="Server configuration error: Authentication unavailable."
         )
 
-    # 2. Check if the client provided the API key header
-    if api_key_header is None:
+    # 2. Check if the client provided the API key header via WebSocket headers
+    api_key_header_value = websocket.headers.get("X-API-Key")
+    if api_key_header_value is None:
         logger.warning(f"Authentication failed: Missing X-API-Key header.")
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=status.WS_1008_POLICY_VIOLATION, # Use WebSocket specific code if desired
+            # Or stick to HTTP codes, FastAPI handles translating them for WS rejections
+            # status_code=status.HTTP_401_UNAUTHORIZED,
             detail="API Key required",
         )
 
     # 3. Compare the provided key with the server's key
-    if hmac.compare_digest(api_key_header, API_TOKEN):
+    if hmac.compare_digest(api_key_header_value, API_TOKEN):
         # Use compare_digest for security against timing attacks
-        return api_key_header
+        return api_key_header_value # Return the validated key
     else:
         logger.warning(f"Authentication failed: Invalid API Key received.")
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=status.WS_1008_POLICY_VIOLATION, # Use WebSocket specific code if desired
+            # status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API Key",
         )
 
@@ -461,7 +467,8 @@ def is_rate_limited(ip: str, current_time: float) -> bool:
     return len(recent_attempts) >= MAX_ATTEMPTS
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, api_key: str = Security(get_api_key)):
+# Change from Security() to Depends()
+async def websocket_endpoint(websocket: WebSocket, api_key: str = Depends(get_api_key)):
     client_id = id(websocket)
     client_ip = websocket.client.host
     
