@@ -25,8 +25,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-from dotenv import load_dotenv
-load_dotenv()
 # Get API key from environment
 API_TOKEN = os.getenv('API_KEY')
 if not API_TOKEN:
