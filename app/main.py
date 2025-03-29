@@ -65,27 +65,38 @@ async def get_api_key(websocket: WebSocket):
             detail="Server configuration error: Authentication unavailable."
         )
 
-    # 2. Check if the client provided the API key header via WebSocket headers
+    # 2. Determine the source and value of the provided key
     api_key_header_value = websocket.headers.get("X-API-Key")
-    if api_key_header_value is None:
-        logger.warning(f"Authentication failed: Missing X-API-Key header.")
+    token_query_param = websocket.query_params.get("token")
+
+    provided_key = None
+    source = None
+
+    if api_key_header_value:
+        provided_key = api_key_header_value
+        source = "header"
+    elif token_query_param:
+        provided_key = token_query_param
+        source = "query parameter"
+
+    # 3. Check if any key was provided
+    if provided_key is None:
+        logger.warning(f"Authentication failed: Missing X-API-Key header or token query parameter.")
         raise HTTPException(
-            status_code=status.WS_1008_POLICY_VIOLATION, # Use WebSocket specific code if desired
-            # Or stick to HTTP codes, FastAPI handles translating them for WS rejections
-            # status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="API Key required",
+            status_code=status.WS_1008_POLICY_VIOLATION,
+            detail="API Key required in X-API-Key header or token query parameter",
         )
 
-    # 3. Compare the provided key with the server's key
-    if hmac.compare_digest(api_key_header_value, API_TOKEN):
+    # 4. Compare the provided key with the server's key
+    if hmac.compare_digest(provided_key, API_TOKEN):
         # Use compare_digest for security against timing attacks
-        return api_key_header_value # Return the validated key
+        logger.debug(f"Authentication successful using {source}.") # Log success source
+        return provided_key # Return the validated key
     else:
-        logger.warning(f"Authentication failed: Invalid API Key received.")
+        logger.warning(f"Authentication failed: Invalid API Key received via {source}.")
         raise HTTPException(
-            status_code=status.WS_1008_POLICY_VIOLATION, # Use WebSocket specific code if desired
-            # status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API Key",
+            status_code=status.WS_1008_POLICY_VIOLATION,
+            detail=f"Invalid API Key provided via {source}",
         )
 
 # Rate limiting setup
