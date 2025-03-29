@@ -494,8 +494,8 @@ async def websocket_endpoint(websocket: WebSocket, api_key: str = Depends(get_ap
             try:
                 # Change to receive bytes instead of text
                 data_bytes = await websocket.receive_bytes()
-                # Encode the received bytes as base64
-                data_base64 = base64.b64encode(data_bytes).decode('utf-8')
+                # Encode the received bytes as base64 and prepend the data URL prefix
+                data_base64 = f"data:image/jpeg;base64,{base64.b64encode(data_bytes).decode('utf-8')}"
 
                 # Log the received data type and size (optional)
                 logger.info(f"Client {client_id} received {len(data_bytes)} bytes.")
