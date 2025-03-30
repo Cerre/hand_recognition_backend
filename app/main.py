@@ -21,7 +21,7 @@ from tools.xgboost_predictor import xgboost_method
 
 # Set up logging - Change to ERROR to only show critical issues
 logging.basicConfig(
-    level=logging.DEBUG,  # Changed from INFO to DEBUG for maximum detail
+    level=logging.INFO,  # Revert to INFO for production
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -45,8 +45,8 @@ app.add_middleware(
 detector = HandDetector(
     static_image_mode=False,  # Keep tracking mode
     max_num_hands=2,
-    min_detection_confidence=0.7,  # Restore to original value
-    min_tracking_confidence=0.7    # Restore to original value
+    min_detection_confidence=0.5,  # Temporarily lower from 0.7
+    min_tracking_confidence=0.5    # Temporarily lower from 0.7
 )
 
 # Security setup
@@ -129,27 +129,11 @@ def create_connection_token(timestamp: str) -> str:
         hashlib.sha256
     ).hexdigest()
 
-def count_fingers(landmarks: np.ndarray) -> int:
-    """Count number of extended fingers using XGBoost method."""
-    finger_indices = [
-        (4, 3, 2, 1),    # Thumb
-        (8, 7, 6, 5),    # Index
-        (12, 11, 10, 9), # Middle
-        (16, 15, 14, 13),# Ring
-        (20, 19, 18, 17) # Pinky
-    ]
-    
-    extended = 0
-    for tip_idx, dip_idx, pip_idx, mcp_idx in finger_indices:
-        if xgboost_method(landmarks, tip_idx, dip_idx, pip_idx, mcp_idx):
-            extended += 1
-    
-    return extended
-
 class GestureStateTracker:
     def __init__(self):
         self.last_update_time = time()
-        self.min_update_interval = 1.0 / 30  # Cap at 30 FPS to reduce load
+        # Allow updates slightly faster than 30fps to avoid skipping due to jitter
+        self.min_update_interval = 1.0 / 35  # Allow up to ~35 FPS updates
 
     def add_frame_data(self, hands_data: List[Dict]) -> Dict:
         """Process the current frame data and return results"""
@@ -163,20 +147,30 @@ class GestureStateTracker:
         # Extract left and right hand data
         left_hand = None
         right_hand = None
+        left_landmarks = []  # Add landmark lists
+        right_landmarks = [] # Add landmark lists
         
         for hand in hands_data:
             if hand['handedness'] == 'Left':
                 left_hand = hand['finger_count']
+                # Convert ndarray to list for JSON serialization
+                landmarks_array = hand.get('landmarks', [])
+                left_landmarks = landmarks_array.tolist() if isinstance(landmarks_array, np.ndarray) else landmarks_array
             else:
                 right_hand = hand['finger_count']
+                # Convert ndarray to list for JSON serialization
+                landmarks_array = hand.get('landmarks', [])
+                right_landmarks = landmarks_array.tolist() if isinstance(landmarks_array, np.ndarray) else landmarks_array
         
         self.last_update_time = current_time
         
         # Return immediate update
         return {
             "type": "score_update",
-            "player": right_hand,   # Player number from right hand
-            "points": left_hand,    # Points from left hand
+            "player": right_hand,   # Use original key for right hand count
+            "points": left_hand,    # Use original key for left hand count
+            "left_landmarks": left_landmarks, # Include landmarks
+            "right_landmarks": right_landmarks, # Include landmarks
             "timestamp": current_time
         }
 
@@ -250,8 +244,10 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
     """Process a single frame and detect hands"""
     start_time = time()
     frame_metrics['processed_count'] += 1
-    
+    timings = {} # Dictionary to store timings
+
     try:
+        t0 = time()
         # Check if this is an auth message
         try:
             json_data = json.loads(base64_frame)
@@ -297,6 +293,7 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
             return {"hands": [], "status": "invalid_frame"}
 
         # Decode base64 image
+        t1 = time()
         try:
             img_data = base64.b64decode(base64_frame.split(',')[1])
             if not img_data:
@@ -318,6 +315,7 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
             frame_metrics['detection_fail_count'] += 1
             frame_metrics['tracking_stats']['no_hands'] += 1
             return {"hands": [], "status": "decode_error"}
+        timings['decode_base64_cv2'] = (time() - t1) * 1000
 
         # Convert to numpy array and decode image
         nparr = np.frombuffer(img_data, np.uint8)
@@ -338,7 +336,9 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
         original_std = np.std(frame)
         
         # Enhance image quality
+        t2 = time()
         frame = enhance_image_quality(frame)
+        timings['enhance_quality'] = (time() - t2) * 1000
         
         # Log enhanced frame statistics
         enhanced_brightness = np.mean(frame)
@@ -356,14 +356,18 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
         })
 
         # Convert to RGB for MediaPipe
+        t3 = time()
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        timings['convert_rgb'] = (time() - t3) * 1000
         
         # Use HandDetector to find hands
+        t4 = time() # Start timing for the block including find_hands
         try:
-            frame, hands_data = detector.find_hands(frame_rgb)
-            detection_time = (time() - start_time) * 1000
+            # Call find_hands (drawing is disabled)
+            _frame_ignored, hands_data = detector.find_hands(frame_rgb, draw=False)
             
-            # Log detailed hand detection results
+            # Simplified logging (original detection_time included more than just find_hands)
+            # Log detailed hand detection results (only if log level is DEBUG)
             hand_details = []
             for hand in hands_data:
                 hand_details.append({
@@ -375,7 +379,6 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
             
             log_frame_debug(client_id, "Hand Detection Details", {
                 "hands_found": len(hands_data),
-                "detection_time_ms": detection_time,
                 "hand_details": hand_details
             })
 
@@ -387,16 +390,24 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
             frame_metrics['detection_fail_count'] += 1
             frame_metrics['tracking_stats']['no_hands'] += 1
             return {"hands": [], "status": "detection_error"}
+            
+        # Log the time for the block containing find_hands and detail extraction
+        timings['find_hands_block'] = (time() - t4) * 1000 
         
         # Process each hand with XGBoost method
+        t5 = time()
         processed_hands = []
+        finger_count_times = []
         for hand_data in hands_data:
+            t_fc_start = time()
             try:
-                finger_count = count_fingers(hand_data['landmarks'])
+                # Call the new predict_count method once per hand
+                finger_count = xgboost_method.predict_count(hand_data['landmarks'])
                 processed_hands.append({
                     'handedness': hand_data['handedness'],
-                    'finger_count': finger_count,
-                    'confidence': float(hand_data.get('confidence', 0))
+                    'finger_count': finger_count, # Use the predicted count
+                    'confidence': float(hand_data.get('confidence', 0)),
+                    'landmarks': hand_data.get('landmarks', [])
                 })
             except Exception as e:
                 log_frame_debug(client_id, "Finger Count Error", {
@@ -404,27 +415,32 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
                     "handedness": hand_data.get('handedness', 'unknown'),
                     "has_landmarks": 'landmarks' in hand_data
                 })
+            finger_count_times.append((time() - t_fc_start) * 1000)
+        timings['count_fingers_total'] = sum(finger_count_times)
+        timings['count_fingers_per_hand_avg'] = sum(finger_count_times) / len(hands_data) if hands_data else 0
+        timings['process_hands_loop'] = (time() - t5) * 1000
 
         # Update success metrics
         frame_metrics['detection_success_count'] += 1
-        processing_time = (time() - start_time) * 1000  # Convert to ms
-        frame_metrics['last_processed_time'] = time()
+        total_processing_time = (time() - start_time) * 1000
+        timings['total_function_time'] = total_processing_time
         
         # Update metrics
-        update_metrics(processing_time, len(processed_hands))
+        update_metrics(total_processing_time, len(processed_hands))
 
-        # Log final results with more details
+        # Log final results with timings
+        log_frame_debug(client_id, "Processing Timings (ms)", timings)
         log_frame_debug(client_id, "Processing Complete", {
             "hands_processed": len(processed_hands),
-            "total_time_ms": processing_time,
+            "total_time_ms": total_processing_time,
             "status": "ok",
             "processed_hands": processed_hands
         })
 
         return {
-            "hands": processed_hands, 
+            "hands": processed_hands,
             "status": "ok",
-            "processing_time_ms": processing_time
+            "processing_time_ms": total_processing_time
         }
 
     except Exception as e:
@@ -482,8 +498,9 @@ async def websocket_endpoint(websocket: WebSocket, api_key: str = Depends(get_ap
     client_id = id(websocket)
     client_ip = websocket.client.host
     
-    # Log client connection details at debug level - Now includes successful auth implicitly
     logger.info(f"Authenticated connection - Client ID: {client_id}, IP: {client_ip}")
+    
+    is_processing = False # Flag to track if a frame is currently being processed
     
     try:
         await websocket.accept()
@@ -491,39 +508,51 @@ async def websocket_endpoint(websocket: WebSocket, api_key: str = Depends(get_ap
         frame_count = 0
         
         while True:
+            update_to_send = None # Store potential update
             try:
-                # Change to receive bytes instead of text
                 data_bytes = await websocket.receive_bytes()
-                # Encode the received bytes as base64 and prepend the data URL prefix
-                data_base64 = f"data:image/jpeg;base64,{base64.b64encode(data_bytes).decode('utf-8')}"
 
-                # Log the received data type and size (optional)
-                logger.info(f"Client {client_id} received {len(data_bytes)} bytes.")
+                # --- Frame Skipping Logic ---
+                if is_processing:
+                    logger.debug(f"Client {client_id} - Skipping frame, already processing.")
+                    continue # Skip this frame if already busy
+                # --------------------------
+                
+                try:
+                    is_processing = True # Set flag before starting processing
+                    
+                    # Encode the received bytes as base64 and prepend the data URL prefix
+                    data_base64 = f"data:image/jpeg;base64,{base64.b64encode(data_bytes).decode('utf-8')}"
+                    logger.info(f"Client {client_id} received {len(data_bytes)} bytes. Starting processing.")
+    
+                    # Pass the base64 encoded string to process_frame
+                    frame_data = process_frame(data_base64, str(client_id))
+                    # Check if state_tracker allows an update based on its internal timing
+                    update_to_send = state_tracker.add_frame_data(frame_data.get("hands", [])) 
 
-                # Pass the base64 encoded string to process_frame
-                frame_data = process_frame(data_base64, str(client_id))
-                update = state_tracker.add_frame_data(frame_data["hands"])
-
-                if update is not None:
-                    await websocket.send_json(update)
+                    # Send update if available
+                    if update_to_send is not None:
+                        await websocket.send_json(update_to_send)
+                        logger.debug(f"Client {client_id} - Sent update: ...") # Keep log concise
+                    else:
+                        logger.debug(f"Client {client_id} - Update skipped by GestureStateTracker rate limit.")
+                        
+                finally:
+                    is_processing = False # Reset flag after processing (and sending) is done
+                    frame_count += 1 # Increment frame count only after processing attempt
 
             except WebSocketDisconnect:
-                logger.debug(f"Client {client_id} disconnected after {frame_count} frames")
+                logger.debug(f"Client {client_id} disconnected after processing attempt on {frame_count} frames")
                 break
             except Exception as e:
-                # Log the full exception traceback
                 logger.exception(f"Detailed error processing frame for client {client_id}:")
-                # Keep the original simple error log as well, if desired
-                # logger.error(f"Error processing frame for client {client_id}: {str(e)}")
+                is_processing = False # Ensure flag is reset even on error within processing block
                 try:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": "Internal server error",
-                        "hands": []
-                    })
-                except:
-                    break
+                    # Attempt to send an error message, but don't block if it fails
+                    await websocket.send_json({"type": "error", "message": "Internal server error"})
+                except Exception:
+                    logger.warning(f"Client {client_id} - Failed to send error message, connection might be closed.")
+                    break # Assume connection is broken if we can't send error
+    
     except Exception as e:
-        logger.error(f"Failed to establish WebSocket connection for client {client_id} from {client_ip}: {str(e)}")
-        # Connection might already be closed by FastAPI due to auth HTTPException
-        # No explicit close needed here unless accept() itself failed differently.
+        logger.error(f"WebSocket connection failed or closed unexpectedly for client {client_id}: {str(e)}")
