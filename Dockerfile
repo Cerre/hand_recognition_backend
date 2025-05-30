@@ -1,5 +1,4 @@
 FROM python:3.10-slim
-
 WORKDIR /app
 
 # Install system dependencies
@@ -24,11 +23,10 @@ COPY . .
 # Ensure models directory has correct permissions
 RUN chmod -R 777 models
 
-# Set default port if not provided
-ENV PORT=8000
-
-# Expose the port
-EXPOSE ${PORT}
+# Cloud Run sets PORT environment variable to 8080
+# Don't set a default PORT - let Cloud Run provide it
+EXPOSE 8080
 
 # Command to run the application
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT}
+# Use $PORT from Cloud Run environment, app is in app/main.py
+CMD uvicorn app.main:app --host 0.0.0.0 --port $PORT
