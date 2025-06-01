@@ -24,6 +24,7 @@ ENV/
 debug_frames/
 data_output/
 ml_data/
+error_analysis
 
 # Logs
 *.log

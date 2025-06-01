@@ -1,9 +1,0 @@
-services:
-  - type: web
-    name: hand-recognition-backend
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    envVars:
-      # Add any environment variables your app needs
-      # - key: API_KEY
-      #   sync: false  # This means Render will prompt for this value

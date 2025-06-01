@@ -49,7 +49,7 @@ uvicorn app.main:app --host 0.0.0.0 --port $PORT
 ### For Local Development
 Use the camera test tool:
 ```bash
-python tools/camera_test.py
+python local_client_test.py
 ```
 
 This will:
