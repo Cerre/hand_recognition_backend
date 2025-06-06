@@ -27,6 +27,9 @@ latest_hand_data = {"left": {"landmarks": [], "fingers": None},
 # Add a check to see if the .env file was loaded
 if os.getenv('API_KEY'):
     logging.info(".env file loaded successfully and API_KEY found.")
+# else: # This else block was causing an indentation error with the logging.warning below if .env is missing.
+# Ensure the warning is correctly placed if you need to debug .env loading issues.
+# For now, assuming .env loading is not the primary issue.
 else:
     # Make sure this warning is indented under the else
     logging.warning(f"Failed to load API_KEY from {os.path.abspath('.env')}. Ensure the file exists and is formatted correctly.")
@@ -144,60 +147,21 @@ async def send_frames():
                         logging.warning("Failed to encode frame to JPEG.")
                         continue
                     # ------------ #
-
-                    # --- Display --- #
-                    display_frame = frame.copy() # Display original resolution
-                    display_frame = cv2.flip(display_frame, 1)
-                    height, width, _ = display_frame.shape
-
-                    # Draw latest landmarks and connections
-                    for hand_type, hand_data in latest_hand_data.items():
-                        landmarks = hand_data["landmarks"]
-                        if not landmarks: 
-                            continue
-                        color = (0, 255, 0) if hand_type == 'right' else (255, 0, 0)
-                        for connection in mp_hands.HAND_CONNECTIONS:
-                            start_idx = connection[0]
-                            end_idx = connection[1]
-                            if start_idx < len(landmarks) and end_idx < len(landmarks):
-                                start_point = landmarks[start_idx]
-                                end_point = landmarks[end_idx]
-                                if len(start_point) >= 2 and len(end_point) >= 2: 
-                                    start_mirrored_x = 1.0 - start_point[0] 
-                                    end_mirrored_x = 1.0 - end_point[0]
-                                    start_px = (int(start_mirrored_x * width), int(start_point[1] * height))
-                                    end_px = (int(end_mirrored_x * width), int(end_point[1] * height))
-                                    cv2.line(display_frame, start_px, end_px, color, 2)
-                        for i, lm in enumerate(landmarks):
-                           if len(lm) >= 2:
-                                mirrored_x = 1.0 - lm[0] 
-                                cx, cy = int(mirrored_x * width), int(lm[1] * height)
-                                cv2.circle(display_frame, (cx, cy), 5, color, cv2.FILLED)
-
-                    # --- Display Finger Counts --- #
-                    y_pos = 30 
-                    font = cv2.FONT_HERSHEY_SIMPLEX
-                    font_scale = 0.7
-                    font_color = (255, 255, 255)
-                    line_type = 2
-                    left_fingers = latest_hand_data["left"]["fingers"]
-                    right_fingers = latest_hand_data["right"]["fingers"]
-                    if latest_hand_data["left"]["landmarks"]:
-                        text_left = f"Left Hand: {left_fingers if left_fingers is not None else 'N/A'} fingers"
-                        cv2.putText(display_frame, text_left, (10, y_pos), font, font_scale, font_color, line_type)
-                        y_pos += 30
-                    if latest_hand_data["right"]["landmarks"]:
-                         text_right = f"Right Hand: {right_fingers if right_fingers is not None else 'N/A'} fingers"
-                         cv2.putText(display_frame, text_right, (10, y_pos), font, font_scale, font_color, line_type)
-                    # ----------------------------- #
-
-                    cv2.imshow('Local Client Camera View', display_frame)
-                    key = cv2.waitKey(1) 
-                    if key & 0xFF == ord('q'):
-                        break
-                    # ------------- #
                     
-                    # --- Send --- #        
+                    # --- Send --- #
+                    # The display logic is now handled by _update_display_and_get_input
+                    # It will be called via asyncio.to_thread
+                    
+                    quit_pressed = await asyncio.to_thread(
+                        _update_display_and_get_input, 
+                        frame,  # Pass the original frame
+                        latest_hand_data, 
+                        'Local Client Camera View',
+                        mp_hands # Pass the mp_hands module
+                    )
+                    if quit_pressed:
+                        break
+                    
                     await websocket.send(encoded_image.tobytes())
                     # ---------- #
 
@@ -243,9 +207,68 @@ async def send_frames():
     except Exception as e:
         logging.exception(f"An unexpected error occurred: {e}")
 
+# Helper function to handle display and input in a separate thread
+def _update_display_and_get_input(frame_from_cam, current_hand_data, window_name, hands_module):
+    """
+    Processes the frame for display (drawing landmarks, text) and handles cv2.imshow/waitKey.
+    This function is intended to be run in a separate thread to avoid blocking asyncio loop.
+    """
+    display_frame = frame_from_cam.copy()  # Work on a copy for display
+    display_frame = cv2.flip(display_frame, 1)
+    height, width, _ = display_frame.shape
+
+    # Draw latest landmarks and connections
+    for hand_type, hand_data in current_hand_data.items():
+        landmarks = hand_data["landmarks"]
+        if not landmarks:
+            continue
+        color = (0, 255, 0) if hand_type == 'right' else (255, 0, 0)
+        for connection in hands_module.HAND_CONNECTIONS:
+            start_idx = connection[0]
+            end_idx = connection[1]
+            if start_idx < len(landmarks) and end_idx < len(landmarks):
+                start_point = landmarks[start_idx]
+                end_point = landmarks[end_idx]
+                if len(start_point) >= 2 and len(end_point) >= 2:
+                    start_mirrored_x = 1.0 - start_point[0]
+                    end_mirrored_x = 1.0 - end_point[0]
+                    start_px = (int(start_mirrored_x * width), int(start_point[1] * height))
+                    end_px = (int(end_mirrored_x * width), int(end_point[1] * height))
+                    cv2.line(display_frame, start_px, end_px, color, 2)
+        for i, lm in enumerate(landmarks):
+            if len(lm) >= 2:
+                mirrored_x = 1.0 - lm[0]
+                cx, cy = int(mirrored_x * width), int(lm[1] * height)
+                cv2.circle(display_frame, (cx, cy), 5, color, cv2.FILLED)
+
+    # Display Finger Counts
+    y_pos = 30
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.7
+    font_color = (255, 255, 255)
+    line_type = 2
+    left_fingers = current_hand_data["left"]["fingers"]
+    right_fingers = current_hand_data["right"]["fingers"]
+    
+    # Display left hand finger count if landmarks are present
+    if current_hand_data["left"]["landmarks"]:
+        text_left = f"Left Hand: {left_fingers if left_fingers is not None else 'N/A'} fingers"
+        cv2.putText(display_frame, text_left, (10, y_pos), font, font_scale, font_color, line_type)
+        y_pos += 30
+    
+    # Display right hand finger count if landmarks are present
+    if current_hand_data["right"]["landmarks"]:
+        text_right = f"Right Hand: {right_fingers if right_fingers is not None else 'N/A'} fingers"
+        cv2.putText(display_frame, text_right, (10, y_pos), font, font_scale, font_color, line_type)
+
+    cv2.imshow(window_name, display_frame)
+    key = cv2.waitKey(1)
+    if key & 0xFF == ord('q'):
+        return True  # Signal to quit
+    return False # Continue
 
 if __name__ == "__main__":
     try:
         asyncio.run(send_frames())
     except KeyboardInterrupt:
-        logging.info("Client stopped.") 
+        logging.info("Client stopped.")

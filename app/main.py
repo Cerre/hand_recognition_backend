@@ -8,12 +8,13 @@ import logging
 from typing import Dict, List, Any
 import os
 import json
-from time import time
+import time as pytime # Alias to avoid conflict with time function if any
 import hashlib
 import hmac
 from collections import defaultdict
 import asyncio
 from fastapi import status
+from time import time
 
 # Import hand_recognition package
 from hand_recognition import HandDetector
@@ -25,6 +26,11 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# --- Startup Time Logging: Initialize ---
+script_start_time = pytime.time()
+logger.info("Script execution started.")
+
 # Get API key from environment
 API_TOKEN = os.getenv('API_KEY')
 if not API_TOKEN:
@@ -41,13 +47,8 @@ app.add_middleware(
     max_age=3600,
 )
 
-# Initialize hand detection components
-detector = HandDetector(
-    static_image_mode=False,  # Keep tracking mode
-    max_num_hands=2,
-    min_detection_confidence=0.5,  # Temporarily lower from 0.7
-    min_tracking_confidence=0.5    # Temporarily lower from 0.7
-)
+# --- Concurrency Fix: HandDetector will be initialized per connection ---
+# Global 'detector' instance removed.
 
 # Security setup
 # Remove the APIKeyHeader instance as it's not directly used in the dependency anymore
@@ -177,7 +178,14 @@ class GestureStateTracker:
 # Remove the logging functions
 def update_metrics(processing_time: float, hands_count: int):
     """Update metrics without logging"""
-    frame_metrics['processing_times'].append(processing_time)
+    # Ensure processing_time is a float
+    if isinstance(processing_time, (int, float)):
+        frame_metrics['processing_times'].append(float(processing_time))
+    else:
+        logger.warning(f"Invalid processing_time type: {type(processing_time)}. Expected float or int.")
+        # Optionally, append a default value or skip appending
+        # frame_metrics['processing_times'].append(0.0) # Example default
+
     if len(frame_metrics['processing_times']) > 100:
         frame_metrics['processing_times'] = frame_metrics['processing_times'][-100:]
     
@@ -240,9 +248,10 @@ def enhance_image_quality(image: np.ndarray) -> np.ndarray:
     
     return enhanced
 
-def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, Any]:
+# --- Concurrency Fix: Pass detector instance to process_frame ---
+def process_frame(base64_frame: str, detector_instance: HandDetector, client_id: str = "unknown") -> Dict[str, Any]:
     """Process a single frame and detect hands"""
-    start_time = time()
+    start_time = pytime.time() # Use aliased time
     frame_metrics['processed_count'] += 1
     timings = {} # Dictionary to store timings
 
@@ -356,20 +365,21 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
         })
 
         # Convert to RGB for MediaPipe
-        t3 = time()
+        t3 = pytime.time() # Use aliased time
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        timings['convert_rgb'] = (time() - t3) * 1000
+        timings['convert_rgb'] = (pytime.time() - t3) * 1000 # Use aliased time
         
         # Use HandDetector to find hands
-        t4 = time() # Start timing for the block including find_hands
+        t4 = pytime.time() # Use aliased time # Start timing for the block including find_hands
         try:
             # Call find_hands (drawing is disabled)
-            _frame_ignored, hands_data = detector.find_hands(frame_rgb, draw=False)
+            # --- Concurrency Fix: Use passed detector_instance ---
+            _frame_ignored, hands_data = detector_instance.find_hands(frame_rgb, draw=False)
             
             # Simplified logging (original detection_time included more than just find_hands)
             # Log detailed hand detection results (only if log level is DEBUG)
             hand_details = []
-            for hand in hands_data:
+            for hand_idx, hand in enumerate(hands_data): # Added enumerate for unique logging if needed
                 hand_details.append({
                     "handedness": hand.get('handedness', 'unknown'),
                     "confidence": float(hand.get('confidence', 0)),
@@ -391,11 +401,11 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
             frame_metrics['tracking_stats']['no_hands'] += 1
             return {"hands": [], "status": "detection_error"}
             
-        # Log the time for the block containing find_hands and detail extraction
-        timings['find_hands_block'] = (time() - t4) * 1000 
+            # Log the time for the block containing find_hands and detail extraction
+            timings['find_hands_block'] = (pytime.time() - t4) * 1000 # Use aliased time
         
         # Process each hand with XGBoost method
-        t5 = time()
+        t5 = pytime.time() # Use aliased time
         processed_hands = []
         finger_count_times = []
         for hand_data in hands_data:
@@ -415,14 +425,14 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
                     "handedness": hand_data.get('handedness', 'unknown'),
                     "has_landmarks": 'landmarks' in hand_data
                 })
-            finger_count_times.append((time() - t_fc_start) * 1000)
+            finger_count_times.append((pytime.time() - t_fc_start) * 1000) # Use aliased time
         timings['count_fingers_total'] = sum(finger_count_times)
         timings['count_fingers_per_hand_avg'] = sum(finger_count_times) / len(hands_data) if hands_data else 0
-        timings['process_hands_loop'] = (time() - t5) * 1000
+        timings['process_hands_loop'] = (pytime.time() - t5) * 1000 # Use aliased time
 
         # Update success metrics
         frame_metrics['detection_success_count'] += 1
-        total_processing_time = (time() - start_time) * 1000
+        total_processing_time = (pytime.time() - start_time) * 1000 # Use aliased time
         timings['total_function_time'] = total_processing_time
         
         # Update metrics
@@ -455,7 +465,17 @@ def process_frame(base64_frame: str, client_id: str = "unknown") -> Dict[str, An
 # Remove the periodic logging setup
 @app.on_event("startup")
 async def startup_event():
-    pass  # Remove the periodic logging task
+    # --- Startup Time Logging: Log total startup time ---
+    # Log XGBoost model loading time (assuming it happens at import or first use)
+    # For now, we'll just log that xgboost_method is ready.
+    # A more precise logging would require knowing when tools.xgboost_predictor.xgboost_method actually loads its model.
+    logger.info("XGBoost method presumed ready.")
+    
+    # Log FastAPI app readiness and total startup duration
+    app_ready_time = pytime.time() # Use aliased time
+    total_startup_duration = app_ready_time - script_start_time
+    logger.info(f"FastAPI application started. Total startup time: {total_startup_duration:.2f} seconds.")
+    # Note: HandDetector model loading time will be logged per-connection now.
 
 @app.get("/")
 async def root():
@@ -504,6 +524,24 @@ async def websocket_endpoint(websocket: WebSocket, api_key: str = Depends(get_ap
     
     try:
         await websocket.accept()
+        
+        # --- Concurrency Fix: Instantiate HandDetector per connection ---
+        logger.info(f"Client {client_id} - Initializing HandDetector instance...")
+        detector_init_start_time = pytime.time()
+        try:
+            local_detector = HandDetector(
+                static_image_mode=False,
+                max_num_hands=2,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5
+            )
+            detector_init_duration = pytime.time() - detector_init_start_time
+            logger.info(f"Client {client_id} - HandDetector initialized in {detector_init_duration:.2f} seconds.")
+        except Exception as e:
+            logger.error(f"Client {client_id} - Failed to initialize HandDetector: {e}")
+            await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason="Hand detector initialization failed")
+            return
+
         state_tracker = GestureStateTracker()
         frame_count = 0
         
@@ -525,8 +563,9 @@ async def websocket_endpoint(websocket: WebSocket, api_key: str = Depends(get_ap
                     data_base64 = f"data:image/jpeg;base64,{base64.b64encode(data_bytes).decode('utf-8')}"
                     logger.info(f"Client {client_id} received {len(data_bytes)} bytes. Starting processing.")
     
-                    # Pass the base64 encoded string to process_frame
-                    frame_data = process_frame(data_base64, str(client_id))
+                    # Pass the base64 encoded string and local_detector to process_frame
+                    # --- Concurrency Fix: Pass local_detector instance ---
+                    frame_data = process_frame(data_base64, local_detector, str(client_id))
                     # Check if state_tracker allows an update based on its internal timing
                     update_to_send = state_tracker.add_frame_data(frame_data.get("hands", [])) 
 
