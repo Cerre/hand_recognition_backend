@@ -565,7 +565,8 @@ async def websocket_endpoint(websocket: WebSocket, api_key: str = Depends(get_ap
     
                     # Pass the base64 encoded string and local_detector to process_frame
                     # --- Concurrency Fix: Pass local_detector instance ---
-                    frame_data = process_frame(data_base64, local_detector, str(client_id))
+                    # --- Run process_frame in a separate thread ---
+                    frame_data = await asyncio.to_thread(process_frame, data_base64, local_detector, str(client_id))
                     # Check if state_tracker allows an update based on its internal timing
                     update_to_send = state_tracker.add_frame_data(frame_data.get("hands", [])) 
 
