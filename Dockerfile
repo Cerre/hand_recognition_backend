@@ -29,4 +29,4 @@ EXPOSE 8080
 
 # Command to run the application
 # Use $PORT from Cloud Run environment, app is in app/main.py
-CMD uvicorn app.main:app --host 0.0.0.0 --port $PORT
+CMD uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 4
